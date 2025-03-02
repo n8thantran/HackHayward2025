@@ -7,6 +7,26 @@ import numpy as np
 from collections import deque
 import datetime
 import json
+import requests
+
+# Try to import dotenv
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+    load_dotenv()
+except ImportError:
+    print("WARNING: python-dotenv module could not be imported.")
+    print("The application will run without environment variable loading.")
+    DOTENV_AVAILABLE = False
+
+# Check for distutils which is required by some dependencies
+try:
+    import distutils
+except ImportError:
+    print("ERROR: distutils module is missing.")
+    print("This is required by some dependencies. Please install it with:")
+    print("pip install setuptools")
+    # Continue execution as other error handlers will catch specific module issues
 
 # Import required libraries with error handling
 try:
@@ -38,6 +58,20 @@ class VoiceRecognizer:
             print("Voice recognition is disabled due to missing libraries.")
             return
         
+        # Initialize Groq API settings (without using the client library)
+        self.use_groq = False
+        self.groq_api_key = os.environ.get('GROQ_API_KEY')
+        if self.groq_api_key:
+            # Test the API key
+            self.use_groq = self._test_groq_api_key()
+            if self.use_groq:
+                print("Groq API key validated. Will use Groq Whisper for transcription.")
+            else:
+                print("Groq API key failed validation. Falling back to Google Speech Recognition.")
+        else:
+            print("No Groq API key found. Using Google Speech Recognition.")
+            self.use_groq = False
+        
         # Audio parameters (optimized for speech recognition)
         self.RATE = 16000  # Sample rate
         self.CHANNELS = 1  # Mono
@@ -62,6 +96,11 @@ class VoiceRecognizer:
         self.last_activation_time = 0
         self.cooldown_period = 2.0  # seconds to wait between activations
         
+        # File management settings
+        self.max_recordings = 100  # Maximum number of recordings to keep
+        self.cleanup_interval = 3600  # Clean up old files every hour (in seconds)
+        self.last_cleanup_time = time.time()
+        
         # Create recognizer with optimized settings
         self.recognizer = sr.Recognizer()
         # Lower energy threshold for better sensitivity
@@ -73,6 +112,9 @@ class VoiceRecognizer:
         self.recognizer.non_speaking_duration = 0.3
         # Increase phrase threshold for better detection
         self.recognizer.phrase_threshold = 0.3
+        
+        # Run initial cleanup of old files
+        self._cleanup_old_files()
         
     def _expand_wake_words(self, base_words):
         """Expand wake words with common variations to improve detection"""
@@ -142,6 +184,10 @@ class VoiceRecognizer:
                 last_calibration = time.time()
                 calibration_interval = 300  # recalibrate every 5 minutes
                 
+                # For Groq API error tracking
+                groq_errors_count = 0
+                max_groq_errors = 3  # After this many errors, fall back to Google permanently
+                
                 while self.is_listening:
                     # Periodic recalibration
                     current_time = time.time()
@@ -150,15 +196,37 @@ class VoiceRecognizer:
                         self.recognizer.adjust_for_ambient_noise(source, duration=1)
                         last_calibration = current_time
                         print("Recalibration complete")
+                        
+                    # Periodically clean up old files
+                    if current_time - self.last_cleanup_time > self.cleanup_interval:
+                        self._cleanup_old_files()
+                        self.last_cleanup_time = current_time
                     
                     try:
                         # Listen for phrases with a shorter timeout and phrase time limit
                         # This makes it more responsive, like Alexa
                         audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=5)
                         
-                        # Try to recognize speech with Google (reliable API like Alexa uses)
+                        # Save the audio to a temporary file for Groq transcription
+                        temp_audio_path = os.path.join(self.temp_dir, "temp_listen.wav")
+                        with open(temp_audio_path, "wb") as f:
+                            f.write(audio.get_wav_data())
+                        
+                        # Try to recognize speech with Groq Whisper or fall back to Google
                         try:
-                            text = self.recognizer.recognize_google(audio).lower()
+                            if self.use_groq and groq_errors_count < max_groq_errors:
+                                try:
+                                    text = self._transcribe_with_groq(temp_audio_path).lower()
+                                except Exception as e:
+                                    # Count Groq errors
+                                    groq_errors_count += 1
+                                    if groq_errors_count >= max_groq_errors:
+                                        print(f"Too many Groq API errors ({groq_errors_count}). Permanently falling back to Google Speech Recognition.")
+                                        self.use_groq = False
+                                    # Fall back to Google for this attempt
+                                    text = self.recognizer.recognize_google(audio).lower()
+                            else:
+                                text = self.recognizer.recognize_google(audio).lower()
                             
                             # Only print if it's not just background noise
                             if len(text) > 2:  # Filter out very short recognitions
@@ -190,14 +258,24 @@ class VoiceRecognizer:
                                 print(f"Wake word detected: {detected_word} in '{text}'")
                                 
                                 # Save the audio and any following speech
-                                self._save_audio_and_listen_for_command(audio, text, source)
+                                self._save_audio_and_listen_for_command(audio, text, source, temp_audio_path)
                                 
                                 # Update last activation time
                                 self.last_activation_time = time.time()
+                            else:
+                                # Clean up temp file if not used
+                                if os.path.exists(temp_audio_path):
+                                    os.remove(temp_audio_path)
                             
                         except sr.UnknownValueError:
+                            # Clean up temp file
+                            if os.path.exists(temp_audio_path):
+                                os.remove(temp_audio_path)
                             pass  # Speech was not understood
                         except sr.RequestError as e:
+                            # Clean up temp file
+                            if os.path.exists(temp_audio_path):
+                                os.remove(temp_audio_path)
                             print(f"Could not request results from speech recognition service: {e}")
                     except sr.WaitTimeoutError:
                         pass  # Timeout is normal, just continue listening
@@ -213,13 +291,46 @@ class VoiceRecognizer:
         except Exception as e:
             print(f"Fatal error in speech recognition thread: {e}")
             self.is_listening = False
+    
+    def _transcribe_with_groq(self, audio_file):
+        """Transcribe audio using Groq's Whisper model via direct API access"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.groq_api_key}",
+            }
             
-    def _save_audio_and_listen_for_command(self, wake_word_audio, wake_word_text, source):
+            with open(audio_file, "rb") as file:
+                files = {"file": (os.path.basename(audio_file), file, "audio/wav")}
+                data = {
+                    "model": "distil-whisper-large-v3-en",
+                    "language": "en"
+                }
+                
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=5  # Add timeout to prevent hanging
+                )
+                
+                if response.status_code == 200:
+                    return response.json()["text"]
+                else:
+                    print(f"Groq API error ({response.status_code}): {response.text[:100]}...")
+                    raise Exception(f"API error: {response.status_code}")
+                    
+        except Exception as e:
+            print(f"Error with Groq transcription: {e}")
+            # Fall back to Google - but note that this is handled in the calling function
+            raise
+            
+    def _save_audio_and_listen_for_command(self, wake_word_audio, wake_word_text, source, temp_audio_path=None):
         """Save the wake word audio and listen for a follow-up command (like Alexa)"""
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # First save the wake word audio
-        wake_word_filename = self._save_audio(wake_word_audio, f"wake_{timestamp}")
+        wake_word_filename = self._save_audio(wake_word_audio, f"wake_{timestamp}", temp_audio_path)
         
         # Activate VTuber
         if self.callback:
@@ -233,12 +344,21 @@ class VoiceRecognizer:
             command_audio = self.recognizer.listen(source, timeout=1.5, phrase_time_limit=7)
             
             try:
-                # Try to recognize the command
-                command_text = self.recognizer.recognize_google(command_audio).lower()
+                # Save the command audio to temporary file for Groq
+                temp_command_path = os.path.join(self.temp_dir, "temp_command.wav")
+                with open(temp_command_path, "wb") as f:
+                    f.write(command_audio.get_wav_data())
+                
+                # Try to recognize the command with Groq or fallback
+                if self.use_groq:
+                    command_text = self._transcribe_with_groq(temp_command_path).lower()
+                else:
+                    command_text = self.recognizer.recognize_google(command_audio).lower()
+                
                 print(f"Command detected: {command_text}")
                 
                 # Save the command audio
-                command_filename = self._save_audio(command_audio, f"command_{timestamp}")
+                command_filename = self._save_audio(command_audio, f"command_{timestamp}", temp_command_path)
                 
                 # Save metadata about the interaction
                 self._save_metadata(timestamp, wake_word_text, command_text, 
@@ -248,24 +368,35 @@ class VoiceRecognizer:
                 print("Command not understood")
                 # Still save the audio even if not understood
                 self._save_audio(command_audio, f"unknown_command_{timestamp}")
+                
             except sr.RequestError as e:
                 print(f"Could not request results for command: {e}")
+                
+            # Clean up temp file
+            if os.path.exists(temp_command_path):
+                os.remove(temp_command_path)
+                
         except Exception as e:
             print(f"Error while listening for command: {e}")
         
         # Set a timer to deactivate after a few seconds
         threading.Timer(3.0, lambda: self.callback(False) if self.callback else None).start()
     
-    def _save_audio(self, audio_data, prefix):
+    def _save_audio(self, audio_data, prefix, temp_path=None):
         """Save the recorded audio to a file (MP3 if possible, otherwise WAV)"""
         try:
             # Create timestamp for filename
             wav_filename = os.path.join(self.temp_dir, f"{prefix}.wav")
             mp3_filename = os.path.join(self.temp_dir, f"{prefix}.mp3")
             
-            # First save as WAV
-            with open(wav_filename, "wb") as f:
-                f.write(audio_data.get_wav_data())
+            # Use existing temp file if provided, otherwise create from audio_data
+            if temp_path and os.path.exists(temp_path):
+                # Rename temp file instead of creating a new one
+                os.rename(temp_path, wav_filename)
+            else:
+                # First save as WAV
+                with open(wav_filename, "wb") as f:
+                    f.write(audio_data.get_wav_data())
             
             # Convert to MP3 if pydub is available (Alexa-like)
             if MP3_AVAILABLE:
@@ -289,20 +420,127 @@ class VoiceRecognizer:
             return None
             
     def _save_metadata(self, timestamp, wake_word_text, command_text, wake_filename, command_filename):
-        """Save metadata about the voice interaction (like Alexa does)"""
+        """Save detailed metadata about the voice interaction"""
         try:
-            metadata = {
-                "timestamp": timestamp,
-                "wake_word": wake_word_text,
-                "command": command_text,
-                "wake_file": os.path.basename(wake_filename) if wake_filename else None,
-                "command_file": os.path.basename(command_filename) if command_filename else None
+            # Get system info for better debugging
+            system_info = {
+                "platform": os.name,
+                "python_version": os.sys.version.split()[0],
+                "audio_rate": self.RATE,
+                "audio_channels": self.CHANNELS,
             }
             
+            # Get audio file stats if available
+            wake_file_stats = None
+            command_file_stats = None
+            
+            if wake_filename and os.path.exists(wake_filename):
+                wake_file_stats = {
+                    "size_bytes": os.path.getsize(wake_filename),
+                    "created": datetime.datetime.fromtimestamp(os.path.getctime(wake_filename)).isoformat(),
+                }
+                
+            if command_filename and os.path.exists(command_filename):
+                command_file_stats = {
+                    "size_bytes": os.path.getsize(command_filename),
+                    "created": datetime.datetime.fromtimestamp(os.path.getctime(command_filename)).isoformat(),
+                }
+            
+            # Create comprehensive metadata
+            metadata = {
+                "interaction": {
+                    "timestamp": timestamp,
+                    "iso_time": datetime.datetime.now().isoformat(),
+                    "unix_time": time.time(),
+                    "wake_word": {
+                        "text": wake_word_text,
+                        "file": os.path.basename(wake_filename) if wake_filename else None,
+                        "file_stats": wake_file_stats
+                    },
+                    "command": {
+                        "text": command_text,
+                        "file": os.path.basename(command_filename) if command_filename else None,
+                        "file_stats": command_file_stats
+                    }
+                },
+                "system": system_info,
+                "recognition": {
+                    "method": "groq" if self.use_groq else "google",
+                    "energy_threshold": self.recognizer.energy_threshold,
+                    "dynamic_threshold": self.recognizer.dynamic_energy_threshold,
+                }
+            }
+            
+            # Save as pretty-formatted JSON
             metadata_file = os.path.join(self.temp_dir, f"metadata_{timestamp}.json")
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2)
                 
-            print(f"Saved interaction metadata to {metadata_file}")
+            print(f"Saved detailed interaction metadata to {metadata_file}")
+            return metadata_file
         except Exception as e:
-            print(f"Error saving metadata: {e}") 
+            print(f"Error saving metadata: {e}")
+            return None
+
+    def _cleanup_old_files(self):
+        """Clean up old recording files to prevent disk space issues"""
+        try:
+            print("Cleaning up old recording files...")
+            
+            # Get all files in the temp directory
+            all_files = []
+            for file in os.listdir(self.temp_dir):
+                file_path = os.path.join(self.temp_dir, file)
+                if os.path.isfile(file_path):
+                    # Get file creation time and add to list
+                    creation_time = os.path.getctime(file_path)
+                    all_files.append((file_path, creation_time))
+            
+            # Skip if there aren't many files
+            if len(all_files) <= self.max_recordings:
+                print(f"Only {len(all_files)} files found, no cleanup needed (limit: {self.max_recordings})")
+                return
+                
+            # Sort by creation time (oldest first)
+            all_files.sort(key=lambda x: x[1])
+            
+            # Calculate how many files to delete
+            files_to_delete = len(all_files) - self.max_recordings
+            
+            # Delete oldest files
+            deleted_count = 0
+            for file_path, _ in all_files[:files_to_delete]:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting {file_path}: {e}")
+            
+            print(f"Cleanup complete: Deleted {deleted_count} old files, keeping {self.max_recordings} newest recordings")
+        except Exception as e:
+            print(f"Error during file cleanup: {e}")
+
+    def _test_groq_api_key(self):
+        """Test if the Groq API key is valid"""
+        try:
+            # Make a simple request to test the API key
+            headers = {
+                "Authorization": f"Bearer {self.groq_api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.get(
+                "https://api.groq.com/openai/v1/models",
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                print("✓ Groq API key is valid")
+                return True
+            else:
+                print(f"✗ Groq API key validation failed: {response.status_code}")
+                print(f"  Error: {response.text[:100]}...")
+                return False
+        except Exception as e:
+            print(f"✗ Error validating Groq API key: {e}")
+            return False 
