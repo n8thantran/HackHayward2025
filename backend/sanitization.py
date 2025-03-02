@@ -6,6 +6,9 @@ import json
 import time  # Import the time module for measuring elapsed time
 from openai import OpenAI
 import requests
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+from datetime import datetime
 
 load_dotenv()
 
@@ -13,36 +16,49 @@ perplexity_key = os.getenv("perplexity_Key")
 
 client = OpenAI(api_key=perplexity_key, base_url="https://api.perplexity.ai")
 
+# Initialize FastAPI app
+app = FastAPI(title="Voice Command API", description="API for processing voice commands")
+
+class CommandResponse(BaseModel):
+    status: str
+    message: str
+    command_text: str
+    processed_data: Dict[str, Any]
+
 def prompt_perplexity(task: str) -> Tuple[str, Any]:
     content = """
-    You are a classification AI that categorizes user requests into specific types. Your ONLY job is to determine if a request is an email request or a task request, then extract the relevant information.
+    You are a classification AI that categorizes user requests into specific types. Your ONLY job is to determine if a request is an email request or a flight request, then extract the relevant information.
 
     STRICT OUTPUT FORMAT:
     You must respond with a valid JSON object containing exactly these fields:
     {
-        "request_type": "email" OR "task",
+        "request_type": "email" OR "flight",
         "data": {
             // For email requests only:
             "recipient": "email address",
             "subject": "email subject line",
-            //For body, reword the body to be more professional and concise. You need to fill out the fields, dont return a template.
-            // My info is, name: oliver
-            "body": "email body content"
+            "body": "email body content",
+            "senders_name": "name of the sender",
             
-            // For task requests only:
-            "description": "full task description"
+            // For flight requests only:
+            "from_city": "city name",
+            "to_city": "city name",
+            "departure_date": "date of departure",
+            "num_passengers": "number of passengers"
         }
     }
 
     CLASSIFICATION RULES:
     - Email request: Any request asking to send, compose, or draft an email to someone
-    - Task request: Any request to do something that is not sending an email (like reminders, todos, scheduling, etc.)
+    - Flight request: Any request to search for flights or book a flight
 
-    IMPORTANT:
+    CRITICAL INSTRUCTIONS:
+    - Your ENTIRE response must be ONLY the JSON object - no other text
     - Do not include any explanations, notes, or text outside the JSON object
+    - Do not include markdown formatting (```json) around the JSON
     - Ensure the JSON is properly formatted with no trailing commas
-    - If you're unsure about the classification, default to "task"
-    - Extract as much detail as possible for the data fields
+    - For flight requests, convert city codes (like SFO) to full city names (San Francisco)
+    - For num_passengers, convert text numbers ("two") to digits (2)
     """
 
     messages = [
@@ -65,32 +81,43 @@ def prompt_perplexity(task: str) -> Tuple[str, Any]:
         
         # Parse the response content to extract the JSON
         response_content = response.choices[0].message.content
+        print(f"Raw response from Perplexity:\n{response_content}")
+        
         try:
-            # Clean the response in case there's any text before or after the JSON
-            json_start = response_content.find('{')
-            json_end = response_content.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                clean_json = response_content[json_start:json_end]
-                parsed_response = json.loads(clean_json)
+            # First try direct JSON parsing
+            try:
+                parsed_response = json.loads(response_content)
+                print("Successfully parsed JSON directly")
+            except json.JSONDecodeError:
+                # If direct parsing fails, try to extract JSON from text
+                print("Direct JSON parsing failed, trying to extract JSON from text")
+                json_start = response_content.find('{')
+                json_end = response_content.rfind('}') + 1
                 
-                # Validate the response structure
-                request_type = parsed_response.get("request_type", "").lower()
-                if request_type not in ["email", "task"]:
-                    request_type = "unknown"
-                
-                data = parsed_response.get("data", {})
-                
-                # Validate data fields based on request type
-                if request_type == "email" and not all(k in data for k in ["recipient", "subject", "body"]):
-                    print("Warning: Email data missing required fields")
-                
-                if request_type == "task" and "description" not in data:
-                    print("Warning: Task data missing description field")
-                
-                return request_type, data
-            else:
-                print("No valid JSON found in response")
-                return "unknown", {}
+                if json_start >= 0 and json_end > json_start:
+                    clean_json = response_content[json_start:json_end]
+                    print(f"Extracted JSON:\n{clean_json}")
+                    parsed_response = json.loads(clean_json)
+                    print("Successfully parsed extracted JSON")
+                else:
+                    print("No JSON object found in the response")
+                    return "unknown", {}
+            
+            # Validate the response structure
+            request_type = parsed_response.get("request_type", "").lower()
+            if request_type not in ["email", "flight"]:
+                request_type = "unknown"
+            
+            data = parsed_response.get("data", {})
+            
+            # Validate data fields based on request type
+            if request_type == "email" and not all(k in data for k in ["recipient", "subject", "body"]):
+                print("Warning: Email data missing required fields")
+            
+            if request_type == "flight" and not all(k in data for k in ["from_city", "to_city", "departure_date", "num_passengers"]):
+                print("Warning: Flight data missing required fields")
+            
+            return request_type, data
         except json.JSONDecodeError as e:
             print(f"Failed to parse JSON response: {e}")
             print(f"Raw response: {response_content}")
@@ -127,14 +154,26 @@ def handle_request(task: str):
                 "data": data
             }
     
-    elif request_type == "task":
-        # Handle task logic here
-        return {
-            "status": "success",
-            "message": "Task processed",
-            "data": data
-        }
-    
+    elif request_type == "flight":
+        # Make a POST request to your flight search endpoint
+        try:
+            flight_endpoint = "http://localhost:3000/flight/search"
+            response = requests.post(
+                flight_endpoint,
+                json=data,
+                headers={"Content-Type": "application/json"}
+            )
+            return {
+                "status": "success" if response.status_code == 200 else "error",
+                "message": "Flight search completed" if response.status_code == 200 else "Failed to search flights",
+                "data": data
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Error searching flights: {str(e)}",
+                "data": data
+            }
     else:
         return {
             "status": "error",
@@ -142,9 +181,51 @@ def handle_request(task: str):
             "data": data
         }
 
-# Example usage
+# Run the FastAPI app if this file is executed directly
 if __name__ == "__main__":
-    # Example task
-    sample_task = "Please send an email to nathan.tran04@sjsu.edu to meet tomorrow to talk about something important"
-    result = handle_request(sample_task)
-    print(json.dumps(result, indent=2))
+    import uvicorn
+    print("Starting voice command API server...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+@app.post("/voice/command", response_model=CommandResponse)
+async def process_voice_command(request: Request):
+    """
+    Process a voice command from the voice assistant
+    
+    Extracts the command text from the request JSON and processes it
+    using the existing handle_request function.
+    """
+    # Get the raw JSON data
+    data = await request.json()
+    
+    # Extract just the command text from the complex structure
+    try:
+        command_text = data["interaction"]["command"]["text"].strip()
+        print(f"Received voice command: {command_text}")
+    except (KeyError, TypeError) as e:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid request format. Could not extract command text: {str(e)}"
+        )
+    
+    # Process the command using the existing handle_request function
+    result = handle_request(command_text)
+    
+    # Return a response
+    return CommandResponse(
+        status=result["status"],
+        message=result["message"],
+        command_text=command_text,
+        processed_data=result["data"]
+    )
+
+@app.get("/health")
+async def health_check():
+    """
+    Simple health check endpoint
+    """
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "service": "Voice Command API"
+    }

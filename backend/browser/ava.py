@@ -1,17 +1,24 @@
-from langchain_groq import ChatGroq
 from browser_use import Agent, Browser, BrowserConfig, Controller
 import os
 from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 import uvicorn
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from pydantic import BaseModel
 import asyncio
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-groq_api_key = os.getenv("GROQ_API_KEY")
+# Get API keys
+openai_api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI(title="Browser Use API", description="API for using the Browser Use library")
 
@@ -23,24 +30,23 @@ running_tasks = set()
 
 class TaskRequest(BaseModel):
     task: str
-
+    
 class TaskResponse(BaseModel):
     task_id: str
     status: str
-
+    
 class TaskResult(BaseModel):
     task_id: str
     result: Optional[str] = None
     status: str
 
 
-groq_api_key = os.getenv("GROQ_API_KEY")
-llm = ChatGroq(
-    model_name="deepseek-r1-distill-llama-70b",
-    api_key=groq_api_key,
-    temperature=0.3
+# Initialize OpenAI LLM
+llm = ChatOpenAI(
+    model_name="gpt-4o",
+    api_key=openai_api_key,
+    temperature=0.6
 )
-
 
 #Settings for browser
 config = BrowserConfig(
@@ -56,314 +62,142 @@ browser_context = None
 async def initialize_browser():
     """Initialize the browser if not already initialized"""
     global browser, browser_context
+    
+    # Initialize browser if needed
     if browser is None:
         print("Initializing browser...")
         browser = Browser(config=config)
-        browser_context = await browser.new_context()
         print("Browser initialized successfully")
     else:
         print("Browser already initialized, reusing existing instance")
+    
+    # Initialize browser context if needed
+    if browser_context is None:
+        print("Creating new browser context...")
+        browser_context = await browser.new_context()
+        print("Browser context created successfully")
+    else:
+        print("Browser context already exists, reusing existing context")
 
 
 async def execute_task(task_id: str, task_description: str):
     """Execute a task with the agent"""
-    global browser_context, task_results, running_tasks
-
+    global browser, browser_context, task_results, running_tasks
+    
     try:
         running_tasks.add(task_id)
         task_results[task_id] = {"status": "running", "result": None}
-
+        
         # Initialize browser if needed
-        if browser_context is None:
+        if browser is None or browser_context is None:
             await initialize_browser()
         else:
             print(f"Reusing existing browser context for task {task_id}")
-
+        
         # Create and run the agent
         agent = Agent(
             task=task_description,
             llm=llm,
             browser_context=browser_context
         )
-
-        result = await agent.run()
-
-        # Update task status
-        task_results[task_id] = {"status": "completed", "result": result}
+        
+        # Run with max_steps to prevent infinite loops
+        result = await agent.run(max_steps=40)
+        
+        # Check if the task completed successfully
+        if result.is_done():
+            task_results[task_id] = {"status": "completed", "result": result}
+        else:
+            task_results[task_id] = {"status": "failed", "result": "Failed to complete task: " + str(result.errors())}
+        
         running_tasks.remove(task_id)
-
-        return result
+        
+        return task_results[task_id]["result"]
     except Exception as e:
-        task_results[task_id] = {"status": "failed", "result": str(e)}
+        error_msg = f"Error executing task: {str(e)}"
+        print(error_msg)
+        task_results[task_id] = {"status": "failed", "result": error_msg}
         if task_id in running_tasks:
             running_tasks.remove(task_id)
-        raise e
+        return error_msg
 
 async def execute_email_task(task_id: str, email_details: dict):
-    """Execute an email task with a single agent handling the entire process"""
+    """Execute an email task with a single agent and clear instructions"""
     global browser_context, task_results, running_tasks
-
+    
     try:
         running_tasks.add(task_id)
         task_results[task_id] = {"status": "running", "result": None}
-
+        
         # Initialize browser if needed
         if browser_context is None:
             await initialize_browser()
         else:
             print(f"Reusing existing browser context for email task {task_id}")
-
+        
         # Validate email details
         required_fields = ["recipient", "subject", "body"]
         missing_fields = [field for field in required_fields if field not in email_details or not email_details[field]]
-
+        
         if missing_fields:
             error_msg = f"Missing required email fields: {', '.join(missing_fields)}"
             task_results[task_id] = {"status": "failed", "result": error_msg}
             running_tasks.remove(task_id)
             return error_msg
-
-        # Create a comprehensive task for the entire email process
-        print("Executing complete email task with a single agent")
-        complete_email_task = f"""
-        Your task is to send an email through Gmail. Follow these steps exactly in sequence, completing each step before moving to the next:
-
-        STEP 1: NAVIGATE TO GMAIL
-        1.1. Navigate to https://mail.google.com/
-            - Type the URL in the address bar and press Enter
-            - Wait at least 5 seconds for the page to start loading
-
-        1.2. Check for login page:
-            - If you see a login page with fields for email/password, stop and report: "Gmail requires login. Please log in manually first."
-            - If you see a "Choose an account" page, stop and report: "Gmail requires account selection. Please select an account manually first."
-            - If you're already logged in, proceed to the next step
-
-        1.3. Wait for Gmail to fully load:
-            - Look for the Gmail logo in the top-left corner
-            - Wait for the inbox to appear with email messages
-            - Wait for all loading indicators to disappear
-            - Wait at least 10 seconds total to ensure complete loading
-
-        STEP 2: COMPOSE NEW EMAIL
-        2.1. Find and click the Compose button:
-            - Look for a button labeled "Compose" in the left sidebar
-            - It may also have a pencil icon or a "+" symbol
-            - The button is typically near the top of the left sidebar
-            - If you don't see it immediately, scroll the sidebar to find it
-            - Click directly on the "Compose" button
-            - Wait at least 3 seconds for the compose window to open
-
-        2.2. Verify the compose window appears:
-            - Look for a popup window with "New Message" or similar text at the top
-            - Confirm you can see fields for recipient (To:), subject, and message body
-            - DO NOT click the Compose button again if you already see the compose window
-            - If the compose window doesn't appear after waiting 10 seconds, only then try clicking Compose again
-
-        STEP 3: ENTER RECIPIENT
-        3.1. Find the recipient field:
-            - Look for the field labeled "To" or "Recipients" at the top of the compose window
-            - Click on this field to focus it
-            - Wait 2 seconds to ensure the field is active
-
-        3.2. Enter the recipient email address:
-            - IMPORTANT: DO NOT CLICK COMPOSE AGAIN. You are already in the compose window.
-            - Type exactly: {email_details['recipient']}
-            - After typing, wait 1 second
-            - Press Tab key to move to the subject field (DO NOT press Enter)
-            - Wait 2 seconds before moving to the next step
-
-        STEP 4: ENTER SUBJECT
-        4.1. Enter the subject:
-            - Verify you are in the subject field
-            - Type exactly: {email_details['subject']}
-            - After typing, wait 1 second
-            - Press Tab key to move to the body field
-            - Wait 1 second to ensure focus has moved to the body field
-
-        STEP 5: ENTER EMAIL BODY
-        5.1. Verify you are in the email body field:
-            - Confirm the cursor is in the large text area below the subject field
-            - If not, click directly in the body area
-
-        5.2. Enter the email body:
-            - Type the following message exactly as written:
-            {email_details['body']}
-            - After typing, wait 2 seconds to ensure all text has been entered
-
-        STEP 6: SEND THE EMAIL
-        6.1. Find the Send button:
-            - Look for a button labeled "Send" at the bottom of the compose window
-            - It's typically a blue button with white text
-            - If you don't see it, look for a paper airplane icon
-
-        6.2. Click the Send button:
-            - Click directly on the Send button
-            - Wait at least 5 seconds for the email to be sent
-
-        STEP 7: REPORT RESULTS
-        7.1. If all steps completed successfully:
-            - Report: "Email sent successfully to {email_details['recipient']} with subject '{email_details['subject']}'"
-
-        7.2. If any step failed:
-            - Report exactly which step failed (e.g., "Failed at step 3.2")
-            - Describe what you observed that indicates failure
-            - Provide any error messages you saw
-
-        Be very thorough and patient with each step. Take your time to ensure each action completes fully before moving to the next step. If you encounter any unexpected situations, describe them in detail.
+        
+        # Step 1: Navigate and compose
+        navigate_compose_task = """
+        1. Navigate to gmail.com and wait for the page to fully load
+        2. Click the Compose button to start a new email
         """
-
-        # Create a single agent with increased timeout and iterations
-        email_agent = Agent(
-            task=complete_email_task,
-            llm=llm,
-            browser_context=browser_context,
-        )
-
-        # Run the agent
-        print(f"Starting email agent for task {task_id}")
-        result = await email_agent.run()
-
-        # Process the result
-        if result and result.is_done():
-            final_result = result.final_result() or "Email task completed"
-            print(f"Email task {task_id} completed: {final_result}")
-            task_results[task_id] = {"status": "completed", "result": final_result}
-        else:
-            # Extract error information
-            error_details = result.errors() if result else []
-            error_msg = "Email task failed or incomplete"
-            detailed_error = f"{error_msg}. Details: {'; '.join(error_details)}" if error_details else error_msg
-            print(f"Email task {task_id} failed: {detailed_error}")
-            task_results[task_id] = {"status": "failed", "result": detailed_error}
-
-        running_tasks.remove(task_id)
-        return task_results[task_id]["result"]
-
-    except Exception as e:
-        error_msg = f"Error executing email task: {str(e)}"
-        print(error_msg)
-        task_results[task_id] = {"status": "failed", "result": error_msg}
-        if task_id in running_tasks:
-            running_tasks.remove(task_id)
-        return error_msg
-
-async def execute_flight_search_task(task_id: str, flight_details: dict):
-    """Execute a flight search task using an agent"""
-    global browser_context, task_results, running_tasks
-
-    try:
-        running_tasks.add(task_id)
-        task_results[task_id] = {"status": "running", "result": None}
-
-        # Initialize browser if needed
-        if browser_context is None:
-            await initialize_browser()
-        else:
-            print(f"Reusing existing browser context for flight search task {task_id}")
-
-        # Validate required fields
-        required_fields = ["from_city", "to_city", "departure_date", "num_passengers"]
-        missing_fields = [field for field in required_fields if field not in flight_details or not flight_details[field]]
-
-        if missing_fields:
-            error_msg = f"Missing required flight search fields: {', '.join(missing_fields)}"
-            task_results[task_id] = {"status": "failed", "result": error_msg}
-            running_tasks.remove(task_id)
-            return error_msg
-
-        # Step 1: Navigate to Google Flights
-        print("Step 1: Navigating to Google Flights")
-        navigate_task = """
-        1. Open the website https://www.google.com/travel/flights
-        2. Wait for the page to fully load
-        3. Ensure the flight search form is visible
-        """
-
+        
         navigate_agent = Agent(
-            task=navigate_task,
+            task=navigate_compose_task,
             llm=llm,
             browser_context=browser_context
         )
-
-        navigate_history = await navigate_agent.run()
-        if not navigate_history.is_done():
-            error_msg = "Failed to navigate to Google Flights"
-            task_results[task_id] = {"status": "failed", "result": error_msg}
-            running_tasks.remove(task_id)
-            return error_msg
-
-        # Step 2: Enter Flight Details
-        flight_search_task = f"""
-        1. Click the departure city input field and enter: {flight_details['from_city']}
-        2. Click the destination city input field and enter: {flight_details['to_city']}
-        3. Click the departure date input field and select: {flight_details['departure_date']}
-        4. Set number of passengers to: {flight_details['num_passengers']}
-        5. Click the search button and wait for the results
+        await navigate_agent.run()
+        
+        # Step 2: Fill recipient and subject
+        recipient_subject_task = f"""
+        Complete these steps in order:
+        1. Click the 'To' field and type: {email_details['recipient']}
+        2. Press Tab to confirm the recipient and move to the Subject field
+        3. Type: {email_details['subject']} in the Subject field
+        4. wait 1 second
+        5. Press Tab to move to the email body
+        6. Type: {email_details['body']} in the email body
+        7. wait 1 second
+        8. Press Tab to move to the Send button
+        9. Press Enter to send the email
         """
-
-        flight_search_agent = Agent(
-            task=flight_search_task,
+        
+        email_agent = Agent(
+            task=recipient_subject_task,
             llm=llm,
             browser_context=browser_context
         )
-
-        search_history = await flight_search_agent.run()
-        if not search_history.is_done():
-            error_msg = "Failed to enter flight details"
-            task_results[task_id] = {"status": "failed", "result": error_msg}
-            running_tasks.remove(task_id)
-            return error_msg
-
-        # Step 3: Extract Flight Information
-        print("Step 3: Extracting flight information")
-        extract_task = """
-        1. Extract the top three flight options including:
-           - Airline name
-           - Price
-           - Departure and arrival times
-           - Layovers (if any)
-           - Total duration
-        2. Return the results as a structured JSON response.
-        """
-
-        extract_agent = Agent(
-            task=extract_task,
-            llm=llm,
-            browser_context=browser_context
-        )
-
-        extract_history = await extract_agent.run()
-        if not extract_history.is_done():
-            error_msg = "Failed to extract flight information"
-            task_results[task_id] = {"status": "failed", "result": error_msg}
-            running_tasks.remove(task_id)
-            return error_msg
-
-        # Return the extracted flight information
-        flight_results = extract_history.get_result()
-        task_results[task_id] = {"status": "completed", "result": flight_results}
+        await email_agent.run()
+        
+        # Update task status
+        task_results[task_id] = {"status": "completed", "result": "Email sent successfully"}
         running_tasks.remove(task_id)
-        return flight_results
-
+        
+        return "Email sent successfully"
     except Exception as e:
-        error_msg = f"Error searching for flights: {str(e)}"
+        error_msg = f"Error sending email: {str(e)}"
         print(error_msg)
         task_results[task_id] = {"status": "failed", "result": error_msg}
         if task_id in running_tasks:
             running_tasks.remove(task_id)
-        return error_msg
+        raise e
 
-class FlightSearchRequest(BaseModel):
-    from_city: str
-    to_city: str
-    departure_date: str
-    num_passengers: int
 
 class EmailRequest(BaseModel):
     recipient: str
     subject: str
     body: str
-
+    senders_name: str
 @app.on_event("startup")
 async def startup_event():
     # Initialize on startup
@@ -388,48 +222,211 @@ async def add_task(task_id: str, task_request: TaskRequest, background_tasks: Ba
     """Add a new task that will run after the specified task"""
     if task_id not in task_results:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
+    
     # Wait until the previous task is completed before starting this one
     async def wait_and_execute():
         while task_id in running_tasks or task_results[task_id]["status"] == "running":
             await asyncio.sleep(1)
-
+        
         # If the previous task failed, don't execute the next one
         if task_results[task_id]["status"] == "failed":
             new_task_id = f"task_{len(task_results) + 1}"
             task_results[new_task_id] = {
-                "status": "failed",
+                "status": "failed", 
                 "result": f"Previous task {task_id} failed, so this task was not executed"
             }
             return
-
+        
         # Execute the new task
         new_task_id = f"task_{len(task_results) + 1}"
         await execute_task(new_task_id, task_request.task)
-
+    
     new_task_id = f"task_{len(task_results) + 1}"
     background_tasks.add_task(wait_and_execute)
     return TaskResponse(task_id=new_task_id, status="queued")
+
+class FlightSearchRequest(BaseModel):
+    from_city: str
+    to_city: str
+    departure_date: str
+    num_passengers: int
+
+async def execute_flight_search_task(task_id: str, flight_details: dict):
+    """Execute a flight search task using an agent"""
+    global browser, browser_context, task_results, running_tasks
+
+    try:
+        running_tasks.add(task_id)
+        task_results[task_id] = {"status": "running", "result": None}
+        logger.info(f"Starting flight search task {task_id}")
+
+        # Initialize browser if needed
+        if browser is None or browser_context is None:
+            await initialize_browser()
+        else:
+            logger.info(f"Reusing existing browser context for flight search task {task_id}")
+
+        # Validate required fields
+        required_fields = ["from_city", "to_city", "departure_date", "num_passengers"]
+        missing_fields = [field for field in required_fields if field not in flight_details or not flight_details[field]]
+
+        if missing_fields:
+            error_msg = f"Missing required flight search fields: {', '.join(missing_fields)}"
+            task_results[task_id] = {"status": "failed", "result": error_msg}
+            running_tasks.remove(task_id)
+            return error_msg
+
+        # Create a single comprehensive flight search task
+        comprehensive_flight_task = f"""
+        DIRECT INSTRUCTION: NAVIGATE TO KAYAK.COM - NOT GOOGLE FLIGHTS
+        
+        GLOBAL TEXT INPUT RULE:
+        - After typing ANY text in ANY field (origin, destination, dates, etc.)
+        - ALWAYS press the Enter key immediately after typing
+        - Wait 2 seconds to see if a suggestion dropdown appears
+        - If it does, the Enter key will select the top suggestion
+        - This applies to ALL text fields without exception
+        
+        Complete these exact steps in order:
+        
+        STEP 1: Open a new browser window and type "https://www.kayak.com/flights" in the address bar
+        - DO NOT search for "Google Flights" or go to Google
+        - Type the FULL URL: https://www.kayak.com/flights
+        - Press Enter and wait for Kayak to load
+        - Verify the URL contains "kayak.com" - if it shows "google.com", you are on the WRONG site
+        - Close any popups or cookie notices
+        
+        STEP 2: Search for a flight with these details:
+        - From: {flight_details['from_city']}
+          * Click on the origin field
+          * Type the city name SLOWLY
+          * Press Enter immediately after typing
+          * Wait 2 seconds to see if a suggestion is selected
+        
+        - To: {flight_details['to_city']} 
+          * Click on the destination field
+          * Type the city name SLOWLY 
+          * Press Enter immediately after typing
+          * Wait 2 seconds to see if a suggestion is selected
+        
+        - Date: {flight_details['departure_date']}
+          * Click on the date field
+          * Type or select the date
+          * If typing, press Enter after entering
+        
+        - Passengers: {flight_details['num_passengers']}
+          * Adjust the passenger count as needed
+        
+        - Click the search button
+        
+        STEP 3: Review flight results on Kayak
+        - Wait for search results to load completely
+        - Identify the top 3 flight options
+        
+        STEP 4: Select the first (or best value) flight option
+        - Click on the "View Deal", "Select", or similar button
+        - You may be redirected to a booking page (either on Kayak or a partner site)
+        - If redirected away from Kayak, that's okay as long as you're proceeding to booking
+        
+        STEP 5: Proceed to checkout/payment page
+        - Fill out any required passenger information if prompted
+        - For ANY text field (including name, address, phone):
+          * Click the field
+          * Type the required information SLOWLY
+          * Press Enter key immediately after typing
+          * Wait 2 seconds to see if the input is accepted
+        
+        - If asked for an email address:
+          * Click the email field
+          * Type the email carefully
+          * Press Enter key immediately after typing
+          * Wait 3 seconds to see if the field validates
+          * Look for any validation messages or color changes
+        
+        - Continue until you reach the payment information page
+        - STOP when you reach the payment/checkout page
+        - DO NOT enter any payment information
+        
+        IMPORTANT REMINDERS:
+        - After EVERY action, check if you're on Kayak or a legitimate booking site
+        - If you find yourself on Google Flights, go back and type "https://www.kayak.com/flights"
+        - NEVER enter payment information or complete a purchase
+        - Stop at the checkout page where payment would normally be entered
+        
+        TEXT INPUT TROUBLESHOOTING:
+        - If pressing Enter causes unexpected behavior, try Tab key instead
+        - If a dropdown appears but Enter doesn't select an option, try clicking the option directly
+        - If a field turns red after pressing Enter, the input may be invalid - check and retry
+        - Some fields may require Tab to move to the next field instead of Enter - adjust accordingly
+        - Always verify your input was accepted before moving to the next field
+        
+        FINAL REPORT:
+        - Describe the flight you selected (airline, times, price)
+        - Confirm you reached the checkout/payment page
+        - List what information would be needed to complete the booking (but do not enter it)
+        """
+
+        # Create a single agent for the entire flight search process
+        logger.info(f"Creating flight search agent for task {task_id}")
+        flight_agent = Agent(
+            task=comprehensive_flight_task,
+            llm=llm,
+            browser_context=browser_context
+        )
+
+        # Run the agent
+        logger.info(f"Running flight search for task {task_id}")
+        try:
+            result = await flight_agent.run(max_steps=40)
+            logger.info(f"Flight search agent run completed for task {task_id}")
+        except Exception as e:
+            logger.error(f"Error during flight search agent run: {str(e)}")
+            raise
+
+        # Check if the task completed successfully
+        if hasattr(result, 'is_done') and result.is_done():
+            task_results[task_id] = {"status": "completed", "result": "Flight search completed successfully"}
+        else:
+            task_results[task_id] = {"status": "failed", "result": "Failed to complete flight search: " + str(result.errors())}
+
+        running_tasks.remove(task_id)
+        return task_results[task_id]["result"]
+
+    except Exception as e:
+        error_msg = f"Error searching for flights: {str(e)}"
+        logger.error(error_msg)
+        task_results[task_id] = {"status": "failed", "result": error_msg}
+        if task_id in running_tasks:
+            running_tasks.remove(task_id)
+        return error_msg
+
+@app.post("/flight/search", response_model=TaskResponse)
+async def search_flight(flight_request: FlightSearchRequest, background_tasks: BackgroundTasks):
+    """Search for flights using Kayak"""
+    task_id = f"flight_{len(task_results) + 1}"
+    
+    flight_details = {
+        "from_city": flight_request.from_city,
+        "to_city": flight_request.to_city,
+        "departure_date": flight_request.departure_date,
+        "num_passengers": flight_request.num_passengers
+    }
+    
+    background_tasks.add_task(execute_flight_search_task, task_id, flight_details)
+    return TaskResponse(task_id=task_id, status="started")
 
 @app.post("/email/send", response_model=TaskResponse)
 async def send_email(email_request: EmailRequest, background_tasks: BackgroundTasks):
     """Send an email using Gmail"""
     task_id = f"email_{len(task_results) + 1}"
-
+    
     email_details = {
         "recipient": email_request.recipient,
         "subject": email_request.subject,
         "body": email_request.body
     }
-
+    
     background_tasks.add_task(execute_email_task, task_id, email_details)
-    return TaskResponse(task_id=task_id, status="started")
-
-@app.post("/task/flight_search", response_model=TaskResponse)
-async def start_flight_search(task_request: FlightSearchRequest, background_tasks: BackgroundTasks):
-    """Start a flight search task"""
-    task_id = f"flight_{len(task_results) + 1}"
-    background_tasks.add_task(execute_flight_search_task, task_id, task_request.dict())
     return TaskResponse(task_id=task_id, status="started")
 
 @app.get("/task/{task_id}", response_model=TaskResult)
@@ -437,7 +434,7 @@ async def get_task_result(task_id: str):
     """Get the result of a task"""
     if task_id not in task_results:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
+    
     return TaskResult(
         task_id=task_id,
         result=task_results[task_id]["result"],
@@ -452,7 +449,7 @@ async def get_all_tasks():
             task_id=task_id,
             result=task_data["result"],
             status=task_data["status"]
-        )
+        ) 
         for task_id, task_data in task_results.items()
     }
 
