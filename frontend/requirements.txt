@@ -1,0 +1,9 @@
+pygame==2.5.2
+moderngl==5.12.0
+pygltflib==1.16.1
+numpy==1.26.3
+pyrr==0.10.3
+pillow==11.1.0
+SpeechRecognition==3.10.0
+sounddevice==0.4.6
+pydub==0.25.1 

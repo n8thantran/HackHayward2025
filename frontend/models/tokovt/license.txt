@@ -1,0 +1,11 @@
+Model Information:
+* title:	TokoVT
+* source:	https://sketchfab.com/3d-models/tokovt-9d35f44614c1428eaa32d76e0415d9d2
+* author:	Doppel_Kaku (https://sketchfab.com/Doppel_Kaku)
+
+Model License:
+* license type:	CC-BY-NC-4.0 (http://creativecommons.org/licenses/by-nc/4.0/)
+* requirements:	Author must be credited. No commercial use.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "TokoVT" (https://sketchfab.com/3d-models/tokovt-9d35f44614c1428eaa32d76e0415d9d2) by Doppel_Kaku (https://sketchfab.com/Doppel_Kaku) licensed under CC-BY-NC-4.0 (http://creativecommons.org/licenses/by-nc/4.0/)
