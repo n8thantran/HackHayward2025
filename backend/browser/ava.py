@@ -38,7 +38,7 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 llm = ChatGroq(
     model_name="deepseek-r1-distill-llama-70b",
     api_key=groq_api_key,
-    temperature=0.6
+    temperature=0.3
 )
 
 
@@ -100,7 +100,7 @@ async def execute_task(task_id: str, task_description: str):
         raise e
 
 async def execute_email_task(task_id: str, email_details: dict):
-    """Execute an email task with a single agent and clear instructions"""
+    """Execute an email task with multiple agents, each handling a specific step"""
     global browser_context, task_results, running_tasks
     
     try:
@@ -123,50 +123,113 @@ async def execute_email_task(task_id: str, email_details: dict):
             running_tasks.remove(task_id)
             return error_msg
         
-        # Step 1: Navigate and compose
-        navigate_compose_task = """
-        1. Navigate to gmail.com and wait for the page to fully load
-        2. Click the Compose button to start a new email
+        # Step 1: Navigate to Gmail and click Compose
+        print("Step 1: Navigating to Gmail and clicking Compose")
+        navigate_task = """
+        Follow these steps exactly:
+        1. Navigate to https://mail.google.com/
+        2. Wait for the page to fully load
+        3. Look for a button with text "Compose" and click it
+        4. Wait for the compose window to appear
         """
         
         navigate_agent = Agent(
-            task=navigate_compose_task,
+            task=navigate_task,
             llm=llm,
             browser_context=browser_context
         )
-        await navigate_agent.run()
         
-        # Step 2: Fill recipient and subject
-        recipient_subject_task = f"""
-        Complete these steps in order:
-        1. Click the 'To' field and type: {email_details['recipient']}
-        2. Press Tab to confirm the recipient and move to the Subject field
-        3. Type: {email_details['subject']} in the Subject field
-        4. Press Tab to move to the email body
-        5. Type: {email_details['body']} in the email body
-        6. Press Tab to move to the Send button
-        7. Press Enter to send the email
+        navigate_history = await navigate_agent.run()
+        if not navigate_history.is_done():
+            error_msg = "Failed to navigate to Gmail and open compose window"
+            task_results[task_id] = {"status": "failed", "result": error_msg}
+            running_tasks.remove(task_id)
+            return error_msg
+        
+        # Step 2: Enter recipient
+        print("Step 2: Entering recipient")
+        recipient_task = f"""
+        Follow these steps exactly:
+        1. Find the input field labeled "To" or "Recipients" in the compose window
+        2. Click on this field
+        3. Type exactly: {email_details['recipient']}
+        4. Press Tab key to confirm
         """
         
-        email_agent = Agent(
-            task=recipient_subject_task,
+        recipient_agent = Agent(
+            task=recipient_task,
             llm=llm,
             browser_context=browser_context
         )
-        await email_agent.run()
         
-        # Update task status
-        task_results[task_id] = {"status": "completed", "result": "Email sent successfully"}
+        recipient_history = await recipient_agent.run()
+        if not recipient_history.is_done():
+            error_msg = "Failed to enter recipient email address"
+            task_results[task_id] = {"status": "failed", "result": error_msg}
+            running_tasks.remove(task_id)
+            return error_msg
+        
+        # Step 3: Enter subject
+        print("Step 3: Entering subject")
+        subject_task = f"""
+        Follow these steps exactly:
+        1. Find the subject field in the compose window (it should be focused after the previous step)
+        2. Type exactly: {email_details['subject']}
+        3. Press Tab key to move to the body
+        """
+        
+        subject_agent = Agent(
+            task=subject_task,
+            llm=llm,
+            browser_context=browser_context
+        )
+        
+        subject_history = await subject_agent.run()
+        if not subject_history.is_done():
+            error_msg = "Failed to enter email subject"
+            task_results[task_id] = {"status": "failed", "result": error_msg}
+            running_tasks.remove(task_id)
+            return error_msg
+        
+        # Step 4: Enter body and send
+        print("Step 4: Entering body and sending email")
+        body_send_task = f"""
+        Follow these steps exactly:
+        1. The email body field should now be focused
+        2. Type the following message exactly as written:
+        {email_details['body']}
+        3. Look for a button labeled "Send" at the bottom of the compose window
+        4. Click the Send button
+        5. Wait for confirmation that the email was sent
+        """
+        
+        body_send_agent = Agent(
+            task=body_send_task,
+            llm=llm,
+            browser_context=browser_context
+        )
+        
+        body_send_history = await body_send_agent.run()
+        if not body_send_history.is_done():
+            error_msg = "Failed to enter email body or send email"
+            task_results[task_id] = {"status": "failed", "result": error_msg}
+            running_tasks.remove(task_id)
+            return error_msg
+        
+        # All steps completed successfully
+        success_msg = "Email sent successfully"
+        print(success_msg)
+        task_results[task_id] = {"status": "completed", "result": success_msg}
         running_tasks.remove(task_id)
+        return success_msg
         
-        return "Email sent successfully"
     except Exception as e:
         error_msg = f"Error sending email: {str(e)}"
         print(error_msg)
         task_results[task_id] = {"status": "failed", "result": error_msg}
         if task_id in running_tasks:
             running_tasks.remove(task_id)
-        raise e
+        return error_msg    
 
 class EmailRequest(BaseModel):
     recipient: str
@@ -219,20 +282,6 @@ async def add_task(task_id: str, task_request: TaskRequest, background_tasks: Ba
     new_task_id = f"task_{len(task_results) + 1}"
     background_tasks.add_task(wait_and_execute)
     return TaskResponse(task_id=new_task_id, status="queued")
-
-@app.post("/email/send", response_model=TaskResponse)
-async def send_email(email_request: EmailRequest, background_tasks: BackgroundTasks):
-    """Send an email using Gmail"""
-    task_id = f"email_{len(task_results) + 1}"
-    
-    email_details = {
-        "recipient": email_request.recipient,
-        "subject": email_request.subject,
-        "body": email_request.body
-    }
-    
-    background_tasks.add_task(execute_email_task, task_id, email_details)
-    return TaskResponse(task_id=task_id, status="started")
 
 @app.get("/task/{task_id}", response_model=TaskResult)
 async def get_task_result(task_id: str):
