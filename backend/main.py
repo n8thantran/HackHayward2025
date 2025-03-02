@@ -1,18 +1,17 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import FileResponse
-from transcribe import speech_to_text
+from fastapi import FastAPI
 from sanitization import prompt_perplexity
 import os
 
 app = FastAPI()
 
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
 @app.post("/main")
-async def brain(mp3: UploadFile = File(...)):
-    mp3_bytes = await mp3.read()
+async def brain(prompt: str):
 
-    text = speech_to_text(mp3_bytes)
-
-    sanitized_steps = prompt_perplexity(text)
+    sanitized_steps = prompt_perplexity(prompt)
 
     url = "http://localhost:3000/task/start"
     payload = {"task": sanitized_steps}
