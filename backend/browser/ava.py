@@ -151,28 +151,30 @@ async def execute_email_task(task_id: str, email_details: dict):
             - The button is typically near the top of the left sidebar
             - If you don't see it immediately, scroll the sidebar to find it
             - Click directly on the "Compose" button
+            - Wait at least 3 seconds for the compose window to open
 
         2.2. Verify the compose window appears:
-            - Wait at least 3 seconds for the compose window to open
             - Look for a popup window with "New Message" or similar text at the top
             - Confirm you can see fields for recipient (To:), subject, and message body
-            - If the compose window doesn't appear within 10 seconds, try clicking Compose again
+            - DO NOT click the Compose button again if you already see the compose window
+            - If the compose window doesn't appear after waiting 10 seconds, only then try clicking Compose again
 
         STEP 3: ENTER RECIPIENT
         3.1. Find the recipient field:
             - Look for the field labeled "To" or "Recipients" at the top of the compose window
             - Click on this field to focus it
-            - Wait 1 second to ensure the field is active
+            - Wait 2 seconds to ensure the field is active
 
         3.2. Enter the recipient email address:
+            - IMPORTANT: DO NOT CLICK COMPOSE AGAIN. You are already in the compose window.
             - Type exactly: {email_details['recipient']}
             - After typing, wait 1 second
-            - Press Enter key to confirm
+            - Press Tab key to move to the subject field (DO NOT press Enter)
             - Wait 2 seconds before moving to the next step
 
         STEP 4: ENTER SUBJECT
         4.1. Enter the subject:
-            - Click on the subject field
+            - Verify you are in the subject field
             - Type exactly: {email_details['subject']}
             - After typing, wait 1 second
             - Press Tab key to move to the body field

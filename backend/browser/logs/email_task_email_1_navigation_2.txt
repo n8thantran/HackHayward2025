@@ -1,0 +1,217 @@
+ SystemMessage 
+You are an AI agent designed to automate browser tasks. Your goal is to accomplish the ultimate task following the rules.
+
+# Input Format
+Task
+Previous steps
+Current URL
+Open Tabs
+Interactive Elements
+[index]<type>text</type>
+- index: Numeric identifier for interaction
+- type: HTML element type (button, input, etc.)
+- text: Element description
+Example:
+[33]<button>Submit Form</button>
+
+- Only elements with numeric indexes in [] are interactive
+- elements without [] provide only context
+
+# Response Rules
+1. RESPONSE FORMAT: You must ALWAYS respond with valid JSON in this exact format:
+{"current_state": {"evaluation_previous_goal": "Success|Failed|Unknown - Analyze the current elements and the image to check if the previous goals/actions are successful like intended by the task. Mention if something unexpected happened. Shortly state why/why not",
+"memory": "Description of what has been done and what you need to remember. Be very specific. Count here ALWAYS how many times you have done something and how many remain. E.g. 0 out of 10 websites analyzed. Continue with abc and xyz",
+"next_goal": "What needs to be done with the next immediate action"},
+"action":[{"one_action_name": {// action-specific parameter}}, // ... more actions in sequence]}
+
+2. ACTIONS: You can specify multiple actions in the list to be executed in sequence. But always specify only one action name per item. Use maximum {max_actions} actions per sequence.
+Common action sequences:
+- Form filling: [{"input_text": {"index": 1, "text": "username"}}, {"input_text": {"index": 2, "text": "password"}}, {"click_element": {"index": 3}}]
+- Navigation and extraction: [{"go_to_url": {"url": "https://example.com"}}, {"extract_content": {"goal": "extract the names"}}]
+- Actions are executed in the given order
+- If the page changes after an action, the sequence is interrupted and you get the new state.
+- Only provide the action sequence until an action which changes the page state significantly.
+- Try to be efficient, e.g. fill forms at once, or chain actions where nothing changes on the page
+- only use multiple actions if it makes sense.
+
+3. ELEMENT INTERACTION:
+- Only use indexes of the interactive elements
+- Elements marked with "[]Non-interactive text" are non-interactive
+
+4. NAVIGATION & ERROR HANDLING:
+- If no suitable elements exist, use other functions to complete the task
+- If stuck, try alternative approaches - like going back to a previous page, new search, new tab etc.
+- Handle popups/cookies by accepting or closing them
+- Use scroll to find elements you are looking for
+- If you want to research something, open a new tab instead of using the current tab
+- If captcha pops up, try to solve it - else try a different approach
+- If the page is not fully loaded, use wait action
+
+5. TASK COMPLETION:
+- Use the done action as the last action as soon as the ultimate task is complete
+- Dont use "done" before you are done with everything the user asked you, except you reach the last step of max_steps. 
+- If you reach your last step, use the done action even if the task is not fully finished. Provide all the information you have gathered so far. If the ultimate task is completly finished set success to true. If not everything the user asked for is completed set success in done to false!
+- If you have to do something repeatedly for example the task says for "each", or "for all", or "x times", count always inside "memory" how many times you have done it and how many remain. Don't stop until you have completed like the task asked you. Only call done after the last step.
+- Don't hallucinate actions
+- Make sure you include everything you found out for the ultimate task in the done text parameter. Do not just say you are done, but include the requested information of the task. 
+
+6. VISUAL CONTEXT:
+- When an image is provided, use it to understand the page layout
+- Bounding boxes with labels on their top right corner correspond to element indexes
+
+7. Form filling:
+- If you fill an input field and your action sequence is interrupted, most often something changed e.g. suggestions popped up under the field.
+
+8. Long tasks:
+- Keep track of the status and subresults in the memory. 
+
+9. Extraction:
+- If your task is to find information - call extract_content on the specific pages to get and store the information.
+Your responses must be always JSON with the specified format.
+
+ HumanMessage 
+Context for the taskAvailable actions: Complete task - with return text and if the task is finished (success=True) or not yet  completly finished (success=False), because last step is reached: 
+{done: {'text': {'type': 'string'}, 'success': {'type': 'boolean'}}}
+Search the query in Google in the current tab, the query should be a search query like humans search in Google, concrete and not vague or super long. More the single most important items. : 
+{search_google: {'query': {'type': 'string'}}}
+Navigate to URL in the current tab: 
+{go_to_url: {'url': {'type': 'string'}}}
+Go back: 
+{go_back: {}}
+Wait for x seconds default 3: 
+{wait: {'seconds': {'default': 3, 'type': 'integer'}}}
+Click element: 
+{click_element: {'index': {'type': 'integer'}, 'xpath': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None}}}
+Input text into a input interactive element: 
+{input_text: {'index': {'type': 'integer'}, 'text': {'type': 'string'}, 'xpath': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None}}}
+Switch tab: 
+{switch_tab: {'page_id': {'type': 'integer'}}}
+Open url in new tab: 
+{open_tab: {'url': {'type': 'string'}}}
+Extract page content to retrieve specific information from the page, e.g. all company names, a specifc description, all information about, links with companies in structured format or simply links: 
+{extract_content: {'goal': {'type': 'string'}}}
+Scroll down the page by pixel amount - if no amount is specified, scroll down one page: 
+{scroll_down: {'amount': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None}}}
+Scroll up the page by pixel amount - if no amount is specified, scroll up one page: 
+{scroll_up: {'amount': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None}}}
+Send strings of special keys like Escape,Backspace, Insert, PageDown, Delete, Enter, Shortcuts such as `Control+o`, `Control+Shift+T` are supported as well. This gets used in keyboard.press. : 
+{send_keys: {'keys': {'type': 'string'}}}
+If you dont find something which you want to interact with, scroll to it: 
+{scroll_to_text: {'text': {'type': 'string'}}}
+Get all options from a native dropdown: 
+{get_dropdown_options: {'index': {'type': 'integer'}}}
+Select dropdown option for interactive element index by the text of the option you want to select: 
+{select_dropdown_option: {'index': {'type': 'integer'}, 'text': {'type': 'string'}}}Your ultimate task is: """
+        Navigate to Gmail and verify login status:
+        
+        1. Go to https://mail.google.com/
+        2. Wait at least 10 seconds for the page to fully load
+        3. Check if you're logged in by looking for:
+           - Gmail logo in the top-left corner
+           - Inbox with email messages
+           - Compose button in the left sidebar
+        
+        If you see a login page or "Choose an account" page, report that login is required.
+        If you're logged in, report "Successfully logged into Gmail"
+        """. If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.Example output:
+
+ HumanMessage 
+Your ultimate task is: """
+        Navigate to Gmail and verify login status:
+        
+        1. Go to https://mail.google.com/
+        2. Wait at least 10 seconds for the page to fully load
+        3. Check if you're logged in by looking for:
+           - Gmail logo in the top-left corner
+           - Inbox with email messages
+           - Compose button in the left sidebar
+        
+        If you see a login page or "Choose an account" page, report that login is required.
+        If you're logged in, report "Successfully logged into Gmail"
+        """. If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.
+
+ HumanMessage 
+Example output:
+
+ AIMessage 
+
+
+ ToolMessage 
+Browser started
+
+ HumanMessage 
+[Your task history memory starts here]
+
+ HumanMessage 
+[Task history memory ends]
+[Current state starts here]
+The following is one-time information - if you need to remember it write it to memory:
+Current url: chrome://new-tab-page/
+Available tabs:
+[TabInfo(page_id=0, url='chrome://new-tab-page/', title='New Tab')]
+Interactive elements from top layer of the current page inside the viewport:
+[Start of page]
+[0]<input Search Google or type a URL;search;false;combobox/>
+[1]<button Search by voice/>
+[2]<button Search by image/>
+[3]<div SJSU Official Syllabus/>
+[4]<a SJSU Official Syllabus/>
+[5]<cr-icon-button More actions for SJSU Official Syllabus shortcut;button/>
+[6]<div SCE LED MATRIX/>
+[7]<a SCE LED MATRIX/>
+[8]<cr-icon-button button;More actions for SCE LED MATRIX shortcut/>
+[9]<div SJSU Mail/>
+[10]<a SJSU Mail/>
+[11]<cr-icon-button More actions for SJSU Mail shortcut;button/>
+[12]<div Watch ESPN/>
+[13]<a Watch ESPN/>
+[14]<cr-icon-button button;More actions for Watch ESPN shortcut/>
+[15]<div Buffstreams/>
+[16]<a Buffstreams/>
+[17]<cr-icon-button More actions for Buffstreams shortcut;button/>
+[18]<div Davis vs Roach Live Stream/>
+[19]<a Davis vs Roach Live Stream/>
+[20]<cr-icon-button More actions for Davis vs Roach Live Stream shortcut;button/>
+[21]<div (593) YouTube/>
+[22]<a (593) YouTube/>
+[23]<cr-icon-button More actions for (593) YouTube shortcut;button/>
+[24]<div SJSU Official Syllabus/>
+[25]<a SJSU Official Syllabus/>
+[26]<cr-icon-button More actions for SJSU Official Syllabus shortcut;button/>
+[27]<div OfficeHours.drawio/>
+[28]<a OfficeHours.drawio/>
+[29]<cr-icon-button More actions for OfficeHours.drawio shortcut;button/>
+[30]<cr-button Add shortcut;button/>
+Google Drive
+[31]<cr-icon-button More actions for Google Drive;button/>
+[32]<a Hack Hayward Docs
+Hunter Nguyen edited yesterday/>
+[33]<a Untitled document
+You edited in the past week/>
+[34]<a IMG_5555.MOV
+You opened in the past year/>
+[35]<a Oliver-Majano-Resume- Feb/25.docx
+You opened in the past week/>
+[36]<a 17-Technical-Spec-Draft-1.docx
+You've opened frequently/>
+[37]<a Values speech outline
+You edited in the past week/>
+[38]<cr-button Customize this page;button/>
+... 430 pixels below - scroll or extract content to see more ...
+Current step: 1/15Current date and time: 2025-03-02 00:03
+
+ RESPONSE
+{
+  "current_state": {
+    "evaluation_previous_goal": "Success - Navigated to the new tab page",
+    "memory": "Starting the task. I have completed 0/3 steps. Next, I need to navigate to Gmail.",
+    "next_goal": "Navigate to Gmail"
+  },
+  "action": [
+    {
+      "go_to_url": {
+        "url": "https://mail.google.com/"
+      }
+    }
+  ]
+}
