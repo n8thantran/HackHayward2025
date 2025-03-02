@@ -490,6 +490,26 @@ class VoiceRecognizer:
                 json.dump(metadata, f, indent=2)
                 
             print(f"Saved detailed interaction metadata to {metadata_file}")
+            
+            # Send the metadata to the voice command API endpoint
+            try:
+                api_url = "http://0.0.0.0:8000/voice/command"
+                print(f"Sending command to API: {command_text}")
+                
+                response = requests.post(
+                    api_url,
+                    json=metadata,
+                    headers={"Content-Type": "application/json"},
+                    timeout=5  # Add timeout to prevent hanging
+                )
+                
+                if response.status_code == 200:
+                    print(f"Successfully sent command to API. Response: {response.json()}")
+                else:
+                    print(f"API request failed with status code {response.status_code}: {response.text[:100]}...")
+            except Exception as e:
+                print(f"Error sending command to API: {e}")
+                
             return metadata_file
         except Exception as e:
             print(f"Error saving metadata: {e}")
