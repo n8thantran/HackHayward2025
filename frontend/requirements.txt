@@ -6,4 +6,7 @@ pyrr==0.10.3
 pillow==11.1.0
 SpeechRecognition==3.10.0
 sounddevice==0.4.6
-pydub==0.25.1 
+pydub==0.25.1
+pyaudio==0.2.14
+requests==2.32.3
+python-dotenv==1.0.1 

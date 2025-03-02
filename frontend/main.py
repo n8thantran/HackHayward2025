@@ -18,7 +18,7 @@ try:
 except ImportError as e:
     print(f"WARNING: Voice recognition module could not be imported: {e}")
     print("The application will run without voice activation features.")
-    print("Install required packages with: pip install SpeechRecognition sounddevice pydub")
+    print("Install required packages with: pip install -r requirements.txt")
     VOICE_RECOGNITION_AVAILABLE = False
 
 # Initialize pygame
@@ -145,7 +145,11 @@ def main():
                 wake_words = ["hi ava", "hey ava", "hi eva", "hey eva"]
                 voice_recognizer = VoiceRecognizer(wake_words=wake_words, temp_dir="temp")
                 voice_recognizer.start_listening()
-                print("Alexa-like voice recognition initialized successfully.")
+                print("Voice recognition initialized successfully.")
+                if hasattr(voice_recognizer, 'use_groq') and voice_recognizer.use_groq:
+                    print("Using Groq Whisper for enhanced wake word detection.")
+                else:
+                    print("Using Google Speech Recognition for wake word detection.")
                 print("Say 'Hey Ava' to activate!")
             except Exception as e:
                 print(f"ERROR initializing voice recognition: {e}")
