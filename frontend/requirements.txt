@@ -9,4 +9,5 @@ sounddevice==0.4.6
 pydub==0.25.1
 pyaudio==0.2.14
 requests==2.32.3
-python-dotenv==1.0.1 
+python-dotenv==1.0.1
+elevenlabs==0.2.31 

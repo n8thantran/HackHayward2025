@@ -364,13 +364,23 @@ class VoiceRecognizer:
                 self._save_metadata(timestamp, wake_word_text, command_text, 
                                    wake_word_filename, command_filename)
                 
+                # Pass the command text back to the callback
+                if self.callback:
+                    self.callback(True, command_text)
+                
             except sr.UnknownValueError:
                 print("Command not understood")
                 # Still save the audio even if not understood
                 self._save_audio(command_audio, f"unknown_command_{timestamp}")
+                # Inform callback that command wasn't understood
+                if self.callback:
+                    self.callback(True, "I couldn't understand that")
                 
             except sr.RequestError as e:
                 print(f"Could not request results for command: {e}")
+                # Inform callback about the request error
+                if self.callback:
+                    self.callback(True, "Sorry, I had trouble connecting")
                 
             # Clean up temp file
             if os.path.exists(temp_command_path):
@@ -378,6 +388,9 @@ class VoiceRecognizer:
                 
         except Exception as e:
             print(f"Error while listening for command: {e}")
+            # Inform callback about the error
+            if self.callback:
+                self.callback(True, "Sorry, I encountered an error")
         
         # Set a timer to deactivate after a few seconds
         threading.Timer(3.0, lambda: self.callback(False) if self.callback else None).start()

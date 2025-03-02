@@ -11,6 +11,30 @@ import time
 import threading
 import math
 import random
+import queue
+
+# Add ElevenLabs imports for text-to-speech
+try:
+    from dotenv import load_dotenv
+    from elevenlabs.client import ElevenLabs
+    from elevenlabs import play
+    import os
+    
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Check if ElevenLabs API key is available
+    if os.getenv("ELEVENLABS_API_KEY"):
+        TTS_AVAILABLE = True
+    else:
+        print("WARNING: ELEVENLABS_API_KEY environment variable not found.")
+        print("Create a .env file with your ELEVENLABS_API_KEY or set it in the environment.")
+        TTS_AVAILABLE = False
+except ImportError as e:
+    print(f"WARNING: ElevenLabs TTS module could not be imported: {e}")
+    print("The application will run without voice output features.")
+    print("Install required packages with: pip install python-dotenv elevenlabs")
+    TTS_AVAILABLE = False
 
 # Make imports more reliable with better error handling
 try:
@@ -23,6 +47,9 @@ except ImportError as e:
 
 # Initialize pygame
 pygame.init()
+
+# Initialize font system for text rendering
+pygame.font.init()
 
 # Configure a borderless window
 WIDTH, HEIGHT = 800, 600
@@ -131,9 +158,90 @@ ctx.enable(moderngl.CULL_FACE)
 ctx.enable(moderngl.BLEND)
 ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
 
+# Set up the TTS client
+def initialize_tts():
+    if not TTS_AVAILABLE:
+        return None
+        
+    # Try to initialize ElevenLabs client with API key
+    try:
+        # Initialize ElevenLabs client
+        tts_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+        
+        # Test the connection
+        print("ElevenLabs TTS initialized successfully.")
+        return tts_client
+            
+    except Exception as e:
+        print(f"Failed to initialize ElevenLabs TTS: {e}")
+        return None
+
+# Speech queue to ensure one speech plays at a time
+speech_queue = queue.Queue()
+speech_thread_running = False
+
+# Function to process the speech queue
+def speech_worker(tts_client, voice_id="FGY2WhTYpPnrIDTdsKH5"):
+    """Worker thread that processes speech requests from the queue"""
+    global speech_thread_running
+    
+    while speech_thread_running:
+        try:
+            # Get the next text to speak (block for 0.5 seconds, then check if thread should be running)
+            try:
+                text = speech_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+                
+            # Print debug info
+            print(f"Speaking: '{text}'")
+            
+            # Request speech from ElevenLabs
+            audio_data = tts_client.text_to_speech.convert(
+                text=text,
+                voice_id=voice_id,
+                model_id="eleven_turbo_v2",
+                output_format="mp3_44100_128",
+            )
+            
+            # Play audio using elevenlabs play function (handles playback automatically)
+            play(audio_data)
+            
+            # Mark this item as done
+            speech_queue.task_done()
+            
+        except Exception as e:
+            print(f"Error in TTS playback: {e}")
+            # Mark the task as done even if there was an error
+            if not speech_queue.empty():
+                speech_queue.task_done()
+
+# Function to play text using TTS
+def speak_text(tts_client, text, voice_id="FGY2WhTYpPnrIDTdsKH5"):
+    """Add text to the speech queue to be spoken"""
+    global speech_thread_running, speech_queue
+    
+    if not TTS_AVAILABLE or not tts_client:
+        return
+    
+    # Add the text to the speech queue
+    speech_queue.put(text)
+    
+    # Start the worker thread if it's not already running
+    if not speech_thread_running:
+        speech_thread_running = True
+        thread = threading.Thread(target=speech_worker, args=(tts_client, voice_id), daemon=True)
+        thread.start()
+        return thread
+    
+    return None
+
 # Main rendering loop
 def main():
     try:
+        # Initialize TTS
+        tts_client = initialize_tts()
+        
         # Initialize voice recognition if available
         voice_recognizer = None
         if VOICE_RECOGNITION_AVAILABLE:
@@ -141,8 +249,8 @@ def main():
                 # Create temp directory if it doesn't exist
                 os.makedirs("temp", exist_ok=True)
                 
-                # Initialize with more wake word variations for better detection
-                wake_words = ["hi ava", "hey ava", "hi eva", "hey eva"]
+                # Initialize with simpler wake word for easier activation
+                wake_words = ["hey", "hi"]
                 voice_recognizer = VoiceRecognizer(wake_words=wake_words, temp_dir="temp")
                 voice_recognizer.start_listening()
                 print("Voice recognition initialized successfully.")
@@ -150,11 +258,42 @@ def main():
                     print("Using Groq Whisper for enhanced wake word detection.")
                 else:
                     print("Using Google Speech Recognition for wake word detection.")
-                print("Say 'Hey Ava' to activate!")
+                print("Say 'Hey' to activate!")
             except Exception as e:
                 print(f"ERROR initializing voice recognition: {e}")
                 print("The application will run without voice activation features.")
                 voice_recognizer = None
+        
+        # Load fonts for text rendering
+        try:
+            # Try to load a nice font, fallback to default if not available
+            font_size = 18
+            speech_font = pygame.font.SysFont("Arial", font_size)
+            print("Font loaded successfully.")
+        except Exception as e:
+            print(f"Error loading font: {e}")
+            # Fallback to default font
+            speech_font = pygame.font.Font(None, font_size)
+        
+        # Text rendering settings
+        text_color = (255, 255, 255)  # White text
+        speech_bubble_color = (0, 0, 0, 180)  # Semi-transparent black
+        speech_bubble_padding = 10
+        speech_bubble_border_radius = 10
+        max_bubble_width = 300
+        
+        # Speech bubble state
+        current_message = "Hello, I'm AVA. Your Personal Browsing Assistant"
+        message_timer = 0
+        message_display_time = 5.0  # Initial greeting displays for 5 seconds
+        show_message = True
+        
+        # Speak the initial greeting
+        if tts_client:
+            speak_text(tts_client, current_message)
+        
+        # Last recognized command
+        last_command = ""
         
         # Flag to track wake word activation
         is_activated = False
@@ -164,12 +303,19 @@ def main():
         current_scale = 0.5  # Current scale
         scale_speed = 0.015  # Increased for more responsive animation
         
-        # Scale multiplier when activated - a bit more noticeable
-        activated_scale_multiplier = 1.5  # 50% larger when activated
+        # Scale multiplier when activated - just a tiny bit larger for subtle indication
+        activated_scale_multiplier = 1.1  # Reduced from 1.5 to just 10% larger when activated
         
         # Activation timer - longer to match Alexa-like behavior
         activation_timer = 0
         activation_duration = 5.0  # Duration in seconds to stay activated
+        
+        # Visual indicator for activation - pulsing halo
+        halo_alpha = 0.0        # Transparency of the halo (0-1)
+        halo_pulse_speed = 2.0  # Speed of pulsing
+        halo_radius = 0.0       # Current radius of the halo
+        halo_max_radius = 1.5   # Maximum radius when fully expanded
+        halo_color = (0.4, 0.8, 1.0, 0.0)  # Light blue color with alpha
         
         # Load the model
         model_path = os.path.join(os.path.dirname(__file__), 'models', 'tokovt', 'scene.gltf')
@@ -223,12 +369,34 @@ def main():
         center_bias = 0.7  # Bias toward center position
         
         # Callback function for voice activation
-        def on_voice_activation(activated):
-            nonlocal is_activated, activation_timer
+        def on_voice_activation(activated, command=None):
+            nonlocal is_activated, activation_timer, current_message, message_timer, show_message, last_command
+            
+            # If we receive a command but we're already activated, just store the command without reactivating
+            if activated and command and is_activated:
+                # Just store the command without repeating the activation sequence
+                last_command = command
+                print(f"Command detected: {command}")
+                return
+            
             if activated:
                 is_activated = True
                 activation_timer = 0  # Reset timer on activation
-                print("Voice activated! Model scaling up (listening for command)...")
+                
+                # Set response message - updated to match user requirement
+                current_message = "Okay, I am now recording"
+                message_timer = 0
+                show_message = True
+                print("Voice activated! Listening for command...")
+                
+                # Speak the response using TTS
+                if tts_client:
+                    speak_text(tts_client, current_message)
+                
+                # If a command was captured, store it
+                if command:
+                    last_command = command
+                    print(f"Command detected: {command}")
             else:
                 # Don't immediately deactivate, let the animation timer handle it
                 pass
@@ -250,6 +418,59 @@ def main():
         scissor_x = -100  # Keep original x position
         scissor_y = HEIGHT - 175  # Adjust y to show more of the model
         
+        # Create a quad for the halo effect
+        halo_vertices = np.array([
+            # x,    y,    z,    u,    v
+            -1.0, -1.0, 0.0,  0.0,  0.0,
+             1.0, -1.0, 0.0,  1.0,  0.0,
+             1.0,  1.0, 0.0,  1.0,  1.0,
+            -1.0,  1.0, 0.0,  0.0,  1.0,
+        ], dtype='f4')
+        
+        halo_indices = np.array([0, 1, 2, 0, 2, 3], dtype='i4')
+        
+        halo_vbo = ctx.buffer(halo_vertices)
+        halo_ibo = ctx.buffer(halo_indices)
+        
+        halo_vao = ctx.vertex_array(
+            ctx.program(
+                vertex_shader='''
+                    #version 330
+                    uniform mat4 mvp;
+                    uniform float scale;
+                    
+                    in vec3 in_position;
+                    in vec2 in_texcoord;
+                    
+                    out vec2 v_texcoord;
+                    
+                    void main() {
+                        gl_Position = mvp * vec4(in_position * scale, 1.0);
+                        v_texcoord = in_texcoord;
+                    }
+                ''',
+                fragment_shader='''
+                    #version 330
+                    uniform vec4 color;
+                    uniform float alpha;
+                    
+                    in vec2 v_texcoord;
+                    out vec4 f_color;
+                    
+                    void main() {
+                        // Calculate distance from center for circular gradient
+                        float dist = distance(v_texcoord, vec2(0.5, 0.5)) * 2.0;
+                        // Create a soft circular gradient that fades at the edges
+                        float intensity = 1.0 - smoothstep(0.0, 1.0, dist);
+                        // Apply color with calculated alpha
+                        f_color = vec4(color.rgb, color.a * alpha * intensity);
+                    }
+                '''
+            ),
+            [(halo_vbo, '3f 2f', 'in_position', 'in_texcoord')],
+            index_buffer=halo_ibo
+        )
+        
         while running:            
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -261,7 +482,17 @@ def main():
                     elif event.key == manual_activation_key:
                         is_activated = True
                         activation_timer = 0
-                        print("Manual activation! Model scaling up.")
+                        # Simulate a test command for manual activation - updated message
+                        current_message = "Okay, I am now recording"
+                        message_timer = 0
+                        show_message = True
+                        # For testing - simulate a command after 2 seconds
+                        last_command = "open browser and search for cats"
+                        print("Manual activation! Listening for command.")
+                        
+                        # Speak the response using TTS
+                        if tts_client:
+                            speak_text(tts_client, current_message)
                     # Add a key to recalibrate microphone
                     elif event.key == pygame.K_r and voice_recognizer:
                         print("Manually requesting microphone recalibration...")
@@ -314,16 +545,38 @@ def main():
                 # Update activation timer
                 activation_timer += dt
                 
-                # Set target scale when activated
-                target_scale = model_scale * activated_scale_multiplier
+                # Remove scaling animation - keep original scale
+                target_scale = model_scale  # Keep original scale instead of scaling up
+                
+                # Update halo effect - pulsating animation
+                halo_alpha = 0.4 + 0.2 * math.sin(time.time() * halo_pulse_speed)
+                halo_radius = halo_max_radius * (0.8 + 0.2 * math.sin(time.time() * halo_pulse_speed * 1.5))
                 
                 # If activation time has expired, deactivate
                 if activation_timer >= activation_duration:
                     is_activated = False
                     print("Voice activation ended.")
+                    
+                    # If we have a command, show it
+                    if last_command:
+                        current_message = f"I heard: {last_command}"
+                        message_timer = 0
+                        show_message = True
+                        
+                        # Speak the response using TTS
+                        if tts_client:
+                            speak_text(tts_client, current_message)
+                            
+                        # Reset last_command after displaying
+                        last_command = ""
             else:
                 # Return to normal scale when not activated
                 target_scale = model_scale
+                
+                # Fade out halo effect when not activated
+                halo_alpha = max(0.0, halo_alpha - dt * 2.0)
+                if halo_alpha <= 0.01:
+                    halo_alpha = 0.0
             
             # Smoothly interpolate scale - more responsive
             current_scale += (target_scale - current_scale) * scale_speed * 7
@@ -350,13 +603,122 @@ def main():
             # Render the model (only visible in scissor region)
             gltf_loader.render_gltf(model, model_matrix, view, projection)
             
+            # Render halo effect if activated
+            if halo_alpha > 0.0:
+                # Set up MVP matrix for the halo (centered on model but slightly behind)
+                halo_matrix = translation_matrix @ Matrix44.from_scale((halo_radius, halo_radius, halo_radius))
+                
+                # Set uniforms for the halo shader
+                halo_vao.program['mvp'].write((projection @ view @ halo_matrix).astype('f4').tobytes())
+                halo_vao.program['scale'].value = 1.0
+                halo_vao.program['color'].value = halo_color[:3] + (halo_alpha,)
+                halo_vao.program['alpha'].value = halo_alpha
+                
+                # Enable blend for transparency
+                ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+                
+                # Render the halo
+                halo_vao.render()
+            
             # Disable scissor test after rendering (set to None or reset to full viewport)
             ctx.scissor = None
             
+            # Render speech bubble with text if needed
+            if show_message and current_message:
+                # Get a reference to the screen surface for 2D drawing
+                screen_surface = pygame.display.get_surface()
+                
+                # Function to render text with word wrapping
+                def render_text_with_wrap(text, font, color, max_width, pos_x, pos_y):
+                    words = text.split(' ')
+                    lines = []
+                    current_line = []
+                    
+                    for word in words:
+                        test_line = ' '.join(current_line + [word])
+                        test_width, _ = font.size(test_line)
+                        
+                        if test_width <= max_width:
+                            current_line.append(word)
+                        else:
+                            if current_line:  # If the current line has words, add it to lines
+                                lines.append(' '.join(current_line))
+                                current_line = [word]
+                            else:  # If current_line is empty, the word is too long by itself
+                                lines.append(word)
+                                current_line = []
+                    
+                    # Add the last line
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    
+                    # Render each line
+                    line_surfaces = []
+                    max_line_width = 0
+                    total_height = 0
+                    
+                    for line in lines:
+                        line_surf = font.render(line, True, color)
+                        line_surfaces.append(line_surf)
+                        max_line_width = max(max_line_width, line_surf.get_width())
+                        total_height += line_surf.get_height()
+                    
+                    # Calculate bubble size
+                    bubble_width = max_line_width + speech_bubble_padding * 2
+                    bubble_height = total_height + speech_bubble_padding * 2
+                    
+                    # Draw speech bubble
+                    bubble_rect = pygame.Rect(pos_x - bubble_width // 2, 
+                                             pos_y - bubble_height - 10,
+                                             bubble_width, bubble_height)
+                    
+                    # Semi-transparent background (create a surface with per-pixel alpha)
+                    bubble_surface = pygame.Surface((bubble_width, bubble_height), pygame.SRCALPHA)
+                    bubble_surface.fill((0, 0, 0, 180))  # RGBA: semi-transparent black
+                    
+                    # Draw rounded rectangle (simulate with multiple circles and rects)
+                    pygame.draw.rect(bubble_surface, speech_bubble_color, 
+                                    pygame.Rect(0, 0, bubble_width, bubble_height), 
+                                    border_radius=speech_bubble_border_radius)
+                    
+                    # Draw little triangle pointing to character
+                    triangle_points = [
+                        (bubble_width // 2 - 10, bubble_height),
+                        (bubble_width // 2 + 10, bubble_height),
+                        (bubble_width // 2, bubble_height + 10)
+                    ]
+                    pygame.draw.polygon(bubble_surface, speech_bubble_color, triangle_points)
+                    
+                    # Blit the bubble
+                    screen_surface.blit(bubble_surface, bubble_rect)
+                    
+                    # Draw text onto bubble
+                    current_y = pos_y - bubble_height + speech_bubble_padding - 10
+                    for line_surf in line_surfaces:
+                        screen_surface.blit(line_surf, 
+                                         (pos_x - line_surf.get_width() // 2, current_y))
+                        current_y += line_surf.get_height()
+                
+                # Render the speech bubble with text at the top of the model
+                bubble_x = WIDTH // 2
+                bubble_y = HEIGHT // 2 - 50  # Positioned above the model
+                
+                # We need to temporarily switch to Pygame rendering for the text
+                # Save the OpenGL state first
+                ctx.finish()
+                
+                render_text_with_wrap(current_message, speech_font, text_color, 
+                                    max_bubble_width, bubble_x, bubble_y)
+            
+            # Always flip only once per frame at the end
             pygame.display.flip()
             clock.tick(60)
     
     finally:
+        # Make sure to stop the speech thread when done
+        global speech_thread_running
+        speech_thread_running = False
+        
         # Make sure to stop the voice recognizer when done
         if 'voice_recognizer' in locals() and voice_recognizer:
             voice_recognizer.stop_listening()
