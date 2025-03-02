@@ -11,7 +11,6 @@ import time
 import threading
 import math
 import random
-import queue
 
 # Add ElevenLabs imports for text-to-speech
 try:
@@ -176,23 +175,15 @@ def initialize_tts():
         print(f"Failed to initialize ElevenLabs TTS: {e}")
         return None
 
-# Speech queue to ensure one speech plays at a time
-speech_queue = queue.Queue()
-speech_thread_running = False
-
-# Function to process the speech queue
-def speech_worker(tts_client, voice_id="FGY2WhTYpPnrIDTdsKH5"):
-    """Worker thread that processes speech requests from the queue"""
-    global speech_thread_running
-    
-    while speech_thread_running:
+# Function to play text using TTS
+def speak_text(tts_client, text, voice_id="FGY2WhTYpPnrIDTdsKH5"):
+    """Generate speech from text and play it using ElevenLabs TTS"""
+    if not TTS_AVAILABLE or not tts_client:
+        return
+        
+    # Define a function to be run in a separate thread
+    def tts_thread_func():
         try:
-            # Get the next text to speak (block for 0.5 seconds, then check if thread should be running)
-            try:
-                text = speech_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-                
             # Print debug info
             print(f"Speaking: '{text}'")
             
@@ -207,34 +198,14 @@ def speech_worker(tts_client, voice_id="FGY2WhTYpPnrIDTdsKH5"):
             # Play audio using elevenlabs play function (handles playback automatically)
             play(audio_data)
             
-            # Mark this item as done
-            speech_queue.task_done()
-            
         except Exception as e:
             print(f"Error in TTS playback: {e}")
-            # Mark the task as done even if there was an error
-            if not speech_queue.empty():
-                speech_queue.task_done()
-
-# Function to play text using TTS
-def speak_text(tts_client, text, voice_id="FGY2WhTYpPnrIDTdsKH5"):
-    """Add text to the speech queue to be spoken"""
-    global speech_thread_running, speech_queue
     
-    if not TTS_AVAILABLE or not tts_client:
-        return
+    # Start TTS in a separate thread to avoid blocking the main thread
+    tts_thread = threading.Thread(target=tts_thread_func, daemon=True)
+    tts_thread.start()
     
-    # Add the text to the speech queue
-    speech_queue.put(text)
-    
-    # Start the worker thread if it's not already running
-    if not speech_thread_running:
-        speech_thread_running = True
-        thread = threading.Thread(target=speech_worker, args=(tts_client, voice_id), daemon=True)
-        thread.start()
-        return thread
-    
-    return None
+    return tts_thread
 
 # Main rendering loop
 def main():
@@ -308,7 +279,7 @@ def main():
         
         # Activation timer - longer to match Alexa-like behavior
         activation_timer = 0
-        activation_duration = 5.0  # Duration in seconds to stay activated
+        activation_duration = 10.0  # Increased from 5.0 to 10.0 seconds to give more time for speaking
         
         # Visual indicator for activation - pulsing halo
         halo_alpha = 0.0        # Transparency of the halo (0-1)
@@ -383,8 +354,8 @@ def main():
                 is_activated = True
                 activation_timer = 0  # Reset timer on activation
                 
-                # Set response message - updated to match user requirement
-                current_message = "Okay, I am now recording"
+                # Set response message - Change this text to whatever you want
+                current_message = "I'm listening. How can I help?"  # Modified activation message
                 message_timer = 0
                 show_message = True
                 print("Voice activated! Listening for command...")
@@ -715,10 +686,6 @@ def main():
             clock.tick(60)
     
     finally:
-        # Make sure to stop the speech thread when done
-        global speech_thread_running
-        speech_thread_running = False
-        
         # Make sure to stop the voice recognizer when done
         if 'voice_recognizer' in locals() and voice_recognizer:
             voice_recognizer.stop_listening()

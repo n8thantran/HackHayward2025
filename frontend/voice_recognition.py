@@ -340,8 +340,8 @@ class VoiceRecognizer:
             # Now listen for the command (what comes after "Hey Ava")
             print("Listening for command...")
             
-            # Use a shorter timeout for command to make it feel responsive
-            command_audio = self.recognizer.listen(source, timeout=1.5, phrase_time_limit=7)
+            # Use a longer timeout for command to give user more time to start speaking
+            command_audio = self.recognizer.listen(source, timeout=5.0, phrase_time_limit=7)
             
             try:
                 # Save the command audio to temporary file for Groq
