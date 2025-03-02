@@ -18,10 +18,6 @@ A voice-activated assistant that listens for the wake phrase "Hey, Ava" and disp
 
 1. Clone the repository.
 
-```bash
-
-```
-
 2. Set up environment variables:
 
 ```bash
