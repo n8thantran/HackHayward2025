@@ -23,11 +23,11 @@ running_tasks = set()
 
 class TaskRequest(BaseModel):
     task: str
-    
+
 class TaskResponse(BaseModel):
     task_id: str
     status: str
-    
+
 class TaskResult(BaseModel):
     task_id: str
     result: Optional[str] = None
@@ -68,30 +68,30 @@ async def initialize_browser():
 async def execute_task(task_id: str, task_description: str):
     """Execute a task with the agent"""
     global browser_context, task_results, running_tasks
-    
+
     try:
         running_tasks.add(task_id)
         task_results[task_id] = {"status": "running", "result": None}
-        
+
         # Initialize browser if needed
         if browser_context is None:
             await initialize_browser()
         else:
             print(f"Reusing existing browser context for task {task_id}")
-        
+
         # Create and run the agent
         agent = Agent(
             task=task_description,
             llm=llm,
             browser_context=browser_context
         )
-        
+
         result = await agent.run()
-        
+
         # Update task status
         task_results[task_id] = {"status": "completed", "result": result}
         running_tasks.remove(task_id)
-        
+
         return result
     except Exception as e:
         task_results[task_id] = {"status": "failed", "result": str(e)}
@@ -100,136 +100,262 @@ async def execute_task(task_id: str, task_description: str):
         raise e
 
 async def execute_email_task(task_id: str, email_details: dict):
-    """Execute an email task with multiple agents, each handling a specific step"""
+    """Execute an email task with a single agent handling the entire process"""
     global browser_context, task_results, running_tasks
-    
+
     try:
         running_tasks.add(task_id)
         task_results[task_id] = {"status": "running", "result": None}
-        
+
         # Initialize browser if needed
         if browser_context is None:
             await initialize_browser()
         else:
             print(f"Reusing existing browser context for email task {task_id}")
-        
+
         # Validate email details
         required_fields = ["recipient", "subject", "body"]
         missing_fields = [field for field in required_fields if field not in email_details or not email_details[field]]
-        
+
         if missing_fields:
             error_msg = f"Missing required email fields: {', '.join(missing_fields)}"
             task_results[task_id] = {"status": "failed", "result": error_msg}
             running_tasks.remove(task_id)
             return error_msg
-        
-        # Step 1: Navigate to Gmail and click Compose
-        print("Step 1: Navigating to Gmail and clicking Compose")
-        navigate_task = """
-        Follow these steps exactly:
-        1. Navigate to https://mail.google.com/
-        2. Wait for the page to fully load
-        3. Look for a button with text "Compose" and click it
-        4. Wait for the compose window to appear
+
+        # Create a comprehensive task for the entire email process
+        print("Executing complete email task with a single agent")
+        complete_email_task = f"""
+        Your task is to send an email through Gmail. Follow these steps exactly in sequence, completing each step before moving to the next:
+
+        STEP 1: NAVIGATE TO GMAIL
+        1.1. Navigate to https://mail.google.com/
+            - Type the URL in the address bar and press Enter
+            - Wait at least 5 seconds for the page to start loading
+
+        1.2. Check for login page:
+            - If you see a login page with fields for email/password, stop and report: "Gmail requires login. Please log in manually first."
+            - If you see a "Choose an account" page, stop and report: "Gmail requires account selection. Please select an account manually first."
+            - If you're already logged in, proceed to the next step
+
+        1.3. Wait for Gmail to fully load:
+            - Look for the Gmail logo in the top-left corner
+            - Wait for the inbox to appear with email messages
+            - Wait for all loading indicators to disappear
+            - Wait at least 10 seconds total to ensure complete loading
+
+        STEP 2: COMPOSE NEW EMAIL
+        2.1. Find and click the Compose button:
+            - Look for a button labeled "Compose" in the left sidebar
+            - It may also have a pencil icon or a "+" symbol
+            - The button is typically near the top of the left sidebar
+            - If you don't see it immediately, scroll the sidebar to find it
+            - Click directly on the "Compose" button
+
+        2.2. Verify the compose window appears:
+            - Wait at least 3 seconds for the compose window to open
+            - Look for a popup window with "New Message" or similar text at the top
+            - Confirm you can see fields for recipient (To:), subject, and message body
+            - If the compose window doesn't appear within 10 seconds, try clicking Compose again
+
+        STEP 3: ENTER RECIPIENT
+        3.1. Find the recipient field:
+            - Look for the field labeled "To" or "Recipients" at the top of the compose window
+            - Click on this field to focus it
+            - Wait 1 second to ensure the field is active
+
+        3.2. Enter the recipient email address:
+            - Type exactly: {email_details['recipient']}
+            - After typing, wait 1 second
+            - Press Enter key to confirm
+            - Wait 2 seconds before moving to the next step
+
+        STEP 4: ENTER SUBJECT
+        4.1. Enter the subject:
+            - Click on the subject field
+            - Type exactly: {email_details['subject']}
+            - After typing, wait 1 second
+            - Press Tab key to move to the body field
+            - Wait 1 second to ensure focus has moved to the body field
+
+        STEP 5: ENTER EMAIL BODY
+        5.1. Verify you are in the email body field:
+            - Confirm the cursor is in the large text area below the subject field
+            - If not, click directly in the body area
+
+        5.2. Enter the email body:
+            - Type the following message exactly as written:
+            {email_details['body']}
+            - After typing, wait 2 seconds to ensure all text has been entered
+
+        STEP 6: SEND THE EMAIL
+        6.1. Find the Send button:
+            - Look for a button labeled "Send" at the bottom of the compose window
+            - It's typically a blue button with white text
+            - If you don't see it, look for a paper airplane icon
+
+        6.2. Click the Send button:
+            - Click directly on the Send button
+            - Wait at least 5 seconds for the email to be sent
+
+        STEP 7: REPORT RESULTS
+        7.1. If all steps completed successfully:
+            - Report: "Email sent successfully to {email_details['recipient']} with subject '{email_details['subject']}'"
+
+        7.2. If any step failed:
+            - Report exactly which step failed (e.g., "Failed at step 3.2")
+            - Describe what you observed that indicates failure
+            - Provide any error messages you saw
+
+        Be very thorough and patient with each step. Take your time to ensure each action completes fully before moving to the next step. If you encounter any unexpected situations, describe them in detail.
         """
-        
+
+        # Create a single agent with increased timeout and iterations
+        email_agent = Agent(
+            task=complete_email_task,
+            llm=llm,
+            browser_context=browser_context,
+        )
+
+        # Run the agent
+        print(f"Starting email agent for task {task_id}")
+        result = await email_agent.run()
+
+        # Process the result
+        if result and result.is_done():
+            final_result = result.final_result() or "Email task completed"
+            print(f"Email task {task_id} completed: {final_result}")
+            task_results[task_id] = {"status": "completed", "result": final_result}
+        else:
+            # Extract error information
+            error_details = result.errors() if result else []
+            error_msg = "Email task failed or incomplete"
+            detailed_error = f"{error_msg}. Details: {'; '.join(error_details)}" if error_details else error_msg
+            print(f"Email task {task_id} failed: {detailed_error}")
+            task_results[task_id] = {"status": "failed", "result": detailed_error}
+
+        running_tasks.remove(task_id)
+        return task_results[task_id]["result"]
+
+    except Exception as e:
+        error_msg = f"Error executing email task: {str(e)}"
+        print(error_msg)
+        task_results[task_id] = {"status": "failed", "result": error_msg}
+        if task_id in running_tasks:
+            running_tasks.remove(task_id)
+        return error_msg
+
+async def execute_flight_search_task(task_id: str, flight_details: dict):
+    """Execute a flight search task using an agent"""
+    global browser_context, task_results, running_tasks
+
+    try:
+        running_tasks.add(task_id)
+        task_results[task_id] = {"status": "running", "result": None}
+
+        # Initialize browser if needed
+        if browser_context is None:
+            await initialize_browser()
+        else:
+            print(f"Reusing existing browser context for flight search task {task_id}")
+
+        # Validate required fields
+        required_fields = ["from_city", "to_city", "departure_date", "num_passengers"]
+        missing_fields = [field for field in required_fields if field not in flight_details or not flight_details[field]]
+
+        if missing_fields:
+            error_msg = f"Missing required flight search fields: {', '.join(missing_fields)}"
+            task_results[task_id] = {"status": "failed", "result": error_msg}
+            running_tasks.remove(task_id)
+            return error_msg
+
+        # Step 1: Navigate to Google Flights
+        print("Step 1: Navigating to Google Flights")
+        navigate_task = """
+        1. Open the website https://www.google.com/travel/flights
+        2. Wait for the page to fully load
+        3. Ensure the flight search form is visible
+        """
+
         navigate_agent = Agent(
             task=navigate_task,
             llm=llm,
             browser_context=browser_context
         )
-        
+
         navigate_history = await navigate_agent.run()
         if not navigate_history.is_done():
-            error_msg = "Failed to navigate to Gmail and open compose window"
+            error_msg = "Failed to navigate to Google Flights"
             task_results[task_id] = {"status": "failed", "result": error_msg}
             running_tasks.remove(task_id)
             return error_msg
-        
-        # Step 2: Enter recipient
-        print("Step 2: Entering recipient")
-        recipient_task = f"""
-        Follow these steps exactly:
-        1. Find the input field labeled "To" or "Recipients" in the compose window
-        2. Click on this field
-        3. Type exactly: {email_details['recipient']}
-        4. Press Tab key to confirm
+
+        # Step 2: Enter Flight Details
+        flight_search_task = f"""
+        1. Click the departure city input field and enter: {flight_details['from_city']}
+        2. Click the destination city input field and enter: {flight_details['to_city']}
+        3. Click the departure date input field and select: {flight_details['departure_date']}
+        4. Set number of passengers to: {flight_details['num_passengers']}
+        5. Click the search button and wait for the results
         """
-        
-        recipient_agent = Agent(
-            task=recipient_task,
+
+        flight_search_agent = Agent(
+            task=flight_search_task,
             llm=llm,
             browser_context=browser_context
         )
-        
-        recipient_history = await recipient_agent.run()
-        if not recipient_history.is_done():
-            error_msg = "Failed to enter recipient email address"
+
+        search_history = await flight_search_agent.run()
+        if not search_history.is_done():
+            error_msg = "Failed to enter flight details"
             task_results[task_id] = {"status": "failed", "result": error_msg}
             running_tasks.remove(task_id)
             return error_msg
-        
-        # Step 3: Enter subject
-        print("Step 3: Entering subject")
-        subject_task = f"""
-        Follow these steps exactly:
-        1. Find the subject field in the compose window (it should be focused after the previous step)
-        2. Type exactly: {email_details['subject']}
-        3. Press Tab key to move to the body
+
+        # Step 3: Extract Flight Information
+        print("Step 3: Extracting flight information")
+        extract_task = """
+        1. Extract the top three flight options including:
+           - Airline name
+           - Price
+           - Departure and arrival times
+           - Layovers (if any)
+           - Total duration
+        2. Return the results as a structured JSON response.
         """
-        
-        subject_agent = Agent(
-            task=subject_task,
+
+        extract_agent = Agent(
+            task=extract_task,
             llm=llm,
             browser_context=browser_context
         )
-        
-        subject_history = await subject_agent.run()
-        if not subject_history.is_done():
-            error_msg = "Failed to enter email subject"
+
+        extract_history = await extract_agent.run()
+        if not extract_history.is_done():
+            error_msg = "Failed to extract flight information"
             task_results[task_id] = {"status": "failed", "result": error_msg}
             running_tasks.remove(task_id)
             return error_msg
-        
-        # Step 4: Enter body and send
-        print("Step 4: Entering body and sending email")
-        body_send_task = f"""
-        Follow these steps exactly:
-        1. The email body field should now be focused
-        2. Type the following message exactly as written:
-        {email_details['body']}
-        3. Look for a button labeled "Send" at the bottom of the compose window
-        4. Click the Send button
-        5. Wait for confirmation that the email was sent
-        """
-        
-        body_send_agent = Agent(
-            task=body_send_task,
-            llm=llm,
-            browser_context=browser_context
-        )
-        
-        body_send_history = await body_send_agent.run()
-        if not body_send_history.is_done():
-            error_msg = "Failed to enter email body or send email"
-            task_results[task_id] = {"status": "failed", "result": error_msg}
-            running_tasks.remove(task_id)
-            return error_msg
-        
-        # All steps completed successfully
-        success_msg = "Email sent successfully"
-        print(success_msg)
-        task_results[task_id] = {"status": "completed", "result": success_msg}
+
+        # Return the extracted flight information
+        flight_results = extract_history.get_result()
+        task_results[task_id] = {"status": "completed", "result": flight_results}
         running_tasks.remove(task_id)
-        return success_msg
-        
+        return flight_results
+
     except Exception as e:
-        error_msg = f"Error sending email: {str(e)}"
+        error_msg = f"Error searching for flights: {str(e)}"
         print(error_msg)
         task_results[task_id] = {"status": "failed", "result": error_msg}
         if task_id in running_tasks:
             running_tasks.remove(task_id)
-        return error_msg    
+        return error_msg
+
+class FlightSearchRequest(BaseModel):
+    from_city: str
+    to_city: str
+    departure_date: str
+    num_passengers: int
 
 class EmailRequest(BaseModel):
     recipient: str
@@ -260,35 +386,56 @@ async def add_task(task_id: str, task_request: TaskRequest, background_tasks: Ba
     """Add a new task that will run after the specified task"""
     if task_id not in task_results:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    
+
     # Wait until the previous task is completed before starting this one
     async def wait_and_execute():
         while task_id in running_tasks or task_results[task_id]["status"] == "running":
             await asyncio.sleep(1)
-        
+
         # If the previous task failed, don't execute the next one
         if task_results[task_id]["status"] == "failed":
             new_task_id = f"task_{len(task_results) + 1}"
             task_results[new_task_id] = {
-                "status": "failed", 
+                "status": "failed",
                 "result": f"Previous task {task_id} failed, so this task was not executed"
             }
             return
-        
+
         # Execute the new task
         new_task_id = f"task_{len(task_results) + 1}"
         await execute_task(new_task_id, task_request.task)
-    
+
     new_task_id = f"task_{len(task_results) + 1}"
     background_tasks.add_task(wait_and_execute)
     return TaskResponse(task_id=new_task_id, status="queued")
+
+@app.post("/email/send", response_model=TaskResponse)
+async def send_email(email_request: EmailRequest, background_tasks: BackgroundTasks):
+    """Send an email using Gmail"""
+    task_id = f"email_{len(task_results) + 1}"
+
+    email_details = {
+        "recipient": email_request.recipient,
+        "subject": email_request.subject,
+        "body": email_request.body
+    }
+
+    background_tasks.add_task(execute_email_task, task_id, email_details)
+    return TaskResponse(task_id=task_id, status="started")
+
+@app.post("/task/flight_search", response_model=TaskResponse)
+async def start_flight_search(task_request: FlightSearchRequest, background_tasks: BackgroundTasks):
+    """Start a flight search task"""
+    task_id = f"flight_{len(task_results) + 1}"
+    background_tasks.add_task(execute_flight_search_task, task_id, task_request.dict())
+    return TaskResponse(task_id=task_id, status="started")
 
 @app.get("/task/{task_id}", response_model=TaskResult)
 async def get_task_result(task_id: str):
     """Get the result of a task"""
     if task_id not in task_results:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    
+
     return TaskResult(
         task_id=task_id,
         result=task_results[task_id]["result"],
@@ -303,7 +450,7 @@ async def get_all_tasks():
             task_id=task_id,
             result=task_data["result"],
             status=task_data["status"]
-        ) 
+        )
         for task_id, task_data in task_results.items()
     }
 
