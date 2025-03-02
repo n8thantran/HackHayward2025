@@ -25,7 +25,8 @@ def prompt_perplexity(task: str) -> Tuple[str, Any]:
             // For email requests only:
             "recipient": "email address",
             "subject": "email subject line",
-            //For body, reword the body to be more professional and concise.
+            //For body, reword the body to be more professional and concise. You need to fill out the fields, dont return a template.
+            // My info is, name: oliver
             "body": "email body content"
             
             // For task requests only:
