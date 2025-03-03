@@ -367,6 +367,11 @@ class VoiceRecognizer:
                 # Pass the command text back to the callback
                 if self.callback:
                     self.callback(True, command_text)
+                    
+                    # Wait for a potential confirmation response
+                    # This is handled by the main application's confirmation flow
+                    # No need to deactivate immediately, as we'll wait for confirmation
+                    return
                 
             except sr.UnknownValueError:
                 print("Command not understood")
@@ -392,7 +397,8 @@ class VoiceRecognizer:
             if self.callback:
                 self.callback(True, "Sorry, I encountered an error")
         
-        # Set a timer to deactivate after a few seconds
+        # Set a timer to deactivate after a few seconds - only if we're not in confirmation flow
+        # This will be managed by the main application for confirmation scenarios
         threading.Timer(3.0, lambda: self.callback(False) if self.callback else None).start()
     
     def _save_audio(self, audio_data, prefix, temp_path=None):
@@ -493,7 +499,7 @@ class VoiceRecognizer:
             
             # Send the metadata to the voice command API endpoint
             try:
-                api_url = "http://0.0.0.0:8000/voice/command"
+                api_url = "http://localhost:8000/voice/command"
                 print(f"Sending command to API: {command_text}")
                 
                 response = requests.post(
@@ -576,4 +582,58 @@ class VoiceRecognizer:
                 return False
         except Exception as e:
             print(f"✗ Error validating Groq API key: {e}")
-            return False 
+            return False
+
+    def listen_for_confirmation(self, source):
+        """Listen specifically for a yes/no confirmation response"""
+        try:
+            print("Listening for confirmation (yes/no)...")
+            
+            # Use a shorter timeout for confirmation as it's typically a short response
+            confirmation_audio = self.recognizer.listen(source, timeout=3.0, phrase_time_limit=2.0)
+            
+            try:
+                # Save the confirmation audio to temporary file
+                temp_confirm_path = os.path.join(self.temp_dir, "temp_confirm.wav")
+                with open(temp_confirm_path, "wb") as f:
+                    f.write(confirmation_audio.get_wav_data())
+                
+                # Try to recognize the confirmation response
+                if self.use_groq:
+                    confirmation_text = self._transcribe_with_groq(temp_confirm_path).lower()
+                else:
+                    confirmation_text = self.recognizer.recognize_google(confirmation_audio).lower()
+                
+                print(f"Confirmation response: {confirmation_text}")
+                
+                # Check if it's a yes or no
+                is_confirmed = any(word in confirmation_text for word in ["yes.", "yeah.", "yep.", "correct.", "sure.", "ok.", "okay."])
+                is_denied = any(word in confirmation_text for word in ["no.", "nope.", "don't.", "not.", "cancel.", "incorrect."])
+                
+                # Clean up temp file
+                if os.path.exists(temp_confirm_path):
+                    os.remove(temp_confirm_path)
+                
+                if is_confirmed:
+                    return True, confirmation_text
+                elif is_denied:
+                    return False, confirmation_text
+                else:
+                    # Unclear response
+                    return None, confirmation_text
+                
+            except sr.UnknownValueError:
+                print("Confirmation not understood")
+                if os.path.exists(temp_confirm_path):
+                    os.remove(temp_confirm_path)
+                return None, "I couldn't understand that"
+                
+            except sr.RequestError as e:
+                print(f"Could not request results for confirmation: {e}")
+                if os.path.exists(temp_confirm_path):
+                    os.remove(temp_confirm_path)
+                return None, f"Request error: {e}"
+                
+        except Exception as e:
+            print(f"Error while listening for confirmation: {e}")
+            return None, f"Error: {e}" 

@@ -5,20 +5,15 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 import uvicorn
 from typing import List, Dict, Optional, Union
 from pydantic import BaseModel
+from langchain_groq import ChatGroq
 import asyncio
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 import logging
-
-# Set up logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+import platform
 
 load_dotenv()
 
-# Get API keys
-openai_api_key = os.getenv("OPENAI_API_KEY")
+groq_api_key = os.getenv("GROQ_API_KEY")
 
 app = FastAPI(title="Browser Use API", description="API for using the Browser Use library")
 
@@ -30,29 +25,38 @@ running_tasks = set()
 
 class TaskRequest(BaseModel):
     task: str
-    
+
 class TaskResponse(BaseModel):
     task_id: str
     status: str
-    
+
 class TaskResult(BaseModel):
     task_id: str
     result: Optional[str] = None
     status: str
 
-
-# Initialize OpenAI LLM
-llm = ChatOpenAI(
-    model_name="gpt-4o",
-    api_key=openai_api_key,
+llm = ChatGroq(
+    model_name="deepseek-r1-distill-llama-70b-specdec",
+    api_key=groq_api_key,
     temperature=0.6
 )
 
-#Settings for browser
+def get_browser_path():
+    if platform.system() == "Windows":
+        return "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    elif platform.system() == "Darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    elif platform.system() == "Linux":
+        return "/usr/bin/google-chrome"
+    else:
+        raise Exception(f"Unsupported platform: {platform.system()}")
+
+# Settings for browser
 config = BrowserConfig(
     headless=False,
     disable_security=True,
-    chrome_instance_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    # Use platform-specific Chrome path
+    chrome_instance_path=get_browser_path(),  # Let Playwright auto-detect Chrome location
 )
 
 # Initialize browser at startup
@@ -66,8 +70,17 @@ async def initialize_browser():
     # Initialize browser if needed
     if browser is None:
         print("Initializing browser...")
-        browser = Browser(config=config)
-        print("Browser initialized successfully")
+        try:
+            browser = Browser(config=config)
+            print("Browser initialized successfully")
+        except Exception as e:
+            print(f"Failed to initialize browser: {e}")
+            # Provide helpful error message about Chrome installation
+            print("\nTROUBLESHOOTING:")
+            print("1. Make sure Google Chrome is installed on your system")
+            print("2. On Windows: Check if Chrome is in 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'")
+            print("3. Try running: playwright install chromium")
+            raise
     else:
         print("Browser already initialized, reusing existing instance")
     

@@ -11,6 +11,8 @@ import time
 import threading
 import math
 import random
+import requests
+import json
 
 # Add ElevenLabs imports for text-to-speech
 try:
@@ -175,15 +177,42 @@ def initialize_tts():
         print(f"Failed to initialize ElevenLabs TTS: {e}")
         return None
 
+# Global flag to track if TTS is currently speaking
+is_speaking = False
+
 # Function to play text using TTS
 def speak_text(tts_client, text, voice_id="FGY2WhTYpPnrIDTdsKH5"):
     """Generate speech from text and play it using ElevenLabs TTS"""
+    global is_speaking
+    
     if not TTS_AVAILABLE or not tts_client:
         return
+    
+    # If already speaking, wait before starting new speech
+    if is_speaking:
+        print(f"TTS is busy, queuing: '{text}'")
+        
+        # Define a function to wait and then speak
+        def delayed_speak():
+            global is_speaking
+            # Wait for current speech to finish
+            while is_speaking:
+                time.sleep(0.1)
+            # Now start the new speech
+            speak_text(tts_client, text, voice_id)
+        
+        # Start a thread to handle the delayed speech
+        delay_thread = threading.Thread(target=delayed_speak, daemon=True)
+        delay_thread.start()
+        return delay_thread
         
     # Define a function to be run in a separate thread
     def tts_thread_func():
+        global is_speaking
         try:
+            # Set speaking flag
+            is_speaking = True
+            
             # Print debug info
             print(f"Speaking: '{text}'")
             
@@ -200,6 +229,9 @@ def speak_text(tts_client, text, voice_id="FGY2WhTYpPnrIDTdsKH5"):
             
         except Exception as e:
             print(f"Error in TTS playback: {e}")
+        finally:
+            # Clear speaking flag when done
+            is_speaking = False
     
     # Start TTS in a separate thread to avoid blocking the main thread
     tts_thread = threading.Thread(target=tts_thread_func, daemon=True)
@@ -207,33 +239,443 @@ def speak_text(tts_client, text, voice_id="FGY2WhTYpPnrIDTdsKH5"):
     
     return tts_thread
 
+# Add this function before the main function
+def generate_response(command):
+    """Generate a confirmation response based on the user's command"""
+    command = command.lower()
+    
+    # Check for email requests
+    if "email" in command or "send" in command and ("message" in command or "to" in command):
+        # Extract recipient using simple text parsing
+        recipient = None
+        if "to" in command:
+            parts = command.split("to", 1)
+            if len(parts) > 1:
+                to_part = parts[1].strip()
+                # Look for the recipient (assume it's the first few words after "to")
+                recipient_words = to_part.split()
+                if recipient_words:
+                    # If recipient has multiple words, try to find where it ends
+                    if len(recipient_words) > 1:
+                        # Assume recipient ends at common transition words
+                        end_markers = ["saying", "about", "regarding", "with", "subject", "that", "and", "telling"]
+                        recipient_end = len(recipient_words)
+                        
+                        for i, word in enumerate(recipient_words):
+                            if i > 0 and (word in end_markers or ":" in word):
+                                recipient_end = i
+                                break
+                        
+                        recipient = " ".join(recipient_words[:recipient_end])
+                    else:
+                        recipient = recipient_words[0]
+        
+        # Extract subject if mentioned
+        subject = None
+        subject_indicators = ["about", "regarding", "subject", "titled", "with subject"]
+        
+        for indicator in subject_indicators:
+            if indicator in command:
+                indicator_parts = command.split(indicator, 1)
+                if len(indicator_parts) > 1:
+                    subject_part = indicator_parts[1].strip()
+                    # Look for the end of the subject (until next transition)
+                    end_markers = ["saying", "that", "containing", "with text", "with message", "with content", "body"]
+                    
+                    for marker in end_markers:
+                        if marker in subject_part:
+                            subject = subject_part.split(marker, 1)[0].strip()
+                            break
+                    
+                    # If no end marker found, take a reasonable number of words
+                    if not subject:
+                        subject_words = subject_part.split()
+                        subject = " ".join(subject_words[:min(6, len(subject_words))])
+                    
+                    break
+        
+        # Extract message content if available
+        content = None
+        content_indicators = ["saying", "that says", "containing", "with text", "with message", "with content", "body", "message"]
+        
+        for indicator in content_indicators:
+            if indicator in command:
+                content_parts = command.split(indicator, 1)
+                if len(content_parts) > 1:
+                    content = content_parts[1].strip()
+                    # Clean up the content (remove transition words, quotes)
+                    content = content.strip('"\'')
+                    if content.startswith("that "):
+                        content = content[5:]
+                    if content.startswith("is "):
+                        content = content[3:]
+                    break
+        
+        # Build response with available information
+        if recipient:
+            response = f"I'll send an email to {recipient}"
+            if subject:
+                response += f" with subject '{subject}'"
+            if content:
+                # Truncate long content for the response
+                display_content = content if len(content) < 30 else content[:27] + "..."
+                response += f" saying '{display_content}'"
+            return response + ". Does this sound correct?"
+        else:
+            return "I can send an email for you. Who would you like to send it to?"
+    
+    # Check for booking flights
+    elif "book" in command and "flight" in command:
+        # Extract destination using simple text parsing
+        destination = None
+        for word in ["to", "for"]:
+            if word in command:
+                parts = command.split(word, 1)
+                if len(parts) > 1:
+                    destination_part = parts[1].strip()
+                    destination_words = destination_part.split()
+                    if destination_words:
+                        destination = destination_words[0]
+                        break
+        
+        # Extract date if present
+        date = None
+        date_indicators = ["on", "for"]
+        months = ["january", "february", "march", "april", "may", "june", "july", 
+                 "august", "september", "october", "november", "december"]
+        
+        for indicator in date_indicators:
+            if indicator in command:
+                after_indicator = command.split(indicator, 1)[1].strip()
+                # Look for a month name
+                for month in months:
+                    if month in after_indicator:
+                        month_index = after_indicator.find(month)
+                        # Try to find a number near the month
+                        number_found = False
+                        for i in range(max(0, month_index - 20), min(len(after_indicator), month_index + 20)):
+                            if after_indicator[i:i+2].isdigit():
+                                date = f"{after_indicator[i:i+2]} {month}"
+                                number_found = True
+                                break
+                        if not number_found and month in after_indicator:
+                            date = month
+                        break
+        
+        if destination:
+            if date:
+                return f"Okay, I'll book you a flight to {destination} for {date}. Does this sound correct?"
+            else:
+                return f"Okay, I'll book you a flight to {destination}. Does this sound correct?"
+    
+    # Check for search requests
+    elif "search" in command or "look up" in command or "find" in command:
+        # Extract what to search for
+        search_term = command.replace("search", "").replace("look up", "").replace("find", "").strip()
+        if search_term:
+            return f"I'll search for {search_term}. Would you like me to proceed?"
+    
+    # Handle weather requests
+    elif "weather" in command:
+        location = None
+        if "in" in command:
+            location = command.split("in", 1)[1].strip()
+        
+        if location:
+            return f"I'll check the weather in {location}. Is that right?"
+        else:
+            return "I'll check the current weather for your location. Shall I proceed?"
+    
+    # Generic response for other commands
+    else:
+        return f"I heard: {command}. Would you like me to proceed with this request?"
+
+# Add this function to process confirmations
+def process_confirmation(voice_recognizer, command, is_confirmed):
+    """Process the confirmation response from the user"""
+    if is_confirmed:
+        print(f"Confirmed! Processing command: {command}")
+        
+        # Check if the API server is available
+        def check_api_health():
+            try:
+                health_url = "http://localhost:8000/health"
+                print(f"[DEBUG] Checking API health at: {health_url}")
+                health_response = requests.get(health_url, timeout=2)
+                print(f"[DEBUG] Health check response status: {health_response.status_code}")
+                print(f"[DEBUG] Health check response body: {health_response.text[:100]}")
+                if health_response.status_code == 200:
+                    print("API server is available")
+                    return True
+                else:
+                    print(f"API server is not available: {health_response.status_code}")
+                    return False
+            except Exception as e:
+                print(f"Error checking API health: {e}")
+                print(f"[DEBUG] Exception type: {type(e).__name__}")
+                return False
+        
+        # Check health first
+        print("[DEBUG] Starting API health check...")
+        api_available = check_api_health()
+        print(f"[DEBUG] API available: {api_available}")
+        if not api_available:
+            return "I'm sorry, I can't process your request right now. The backend service appears to be offline."
+        
+        # Here we would make the actual API call to process the command
+        try:
+            # Check if this is an email request
+            if "email" in command.lower() or ("send" in command.lower() and ("message" in command.lower() or "to" in command.lower())):
+                # Extract email details
+                recipient = None
+                subject = None
+                content = None
+                
+                # Basic extraction for demonstration - in real use, this would be more robust
+                command_lower = command.lower()
+                
+                # Extract recipient
+                if "to" in command_lower:
+                    to_parts = command_lower.split("to", 1)
+                    if len(to_parts) > 1:
+                        recipient_part = to_parts[1].strip()
+                        recipient_end = recipient_part.find(" about ")
+                        if recipient_end == -1:
+                            recipient_end = recipient_part.find(" saying ")
+                        if recipient_end == -1:
+                            recipient_end = recipient_part.find(" with ")
+                        if recipient_end == -1:
+                            recipient_end = len(recipient_part)
+                        
+                        recipient = recipient_part[:recipient_end].strip()
+                
+                # Extract subject
+                if "about" in command_lower or "subject" in command_lower:
+                    subject_indicator = "about" if "about" in command_lower else "subject"
+                    subject_parts = command_lower.split(subject_indicator, 1)
+                    if len(subject_parts) > 1:
+                        subject_part = subject_parts[1].strip()
+                        subject_end = subject_part.find(" saying ")
+                        if subject_end == -1:
+                            subject_end = subject_part.find(" containing ")
+                        if subject_end == -1:
+                            subject_end = len(subject_part)
+                        
+                        subject = subject_part[:subject_end].strip()
+                
+                # Extract content
+                content_indicators = ["saying", "containing", "with message", "that says"]
+                for indicator in content_indicators:
+                    if indicator in command_lower:
+                        content_parts = command_lower.split(indicator, 1)
+                        if len(content_parts) > 1:
+                            content = content_parts[1].strip()
+                            break
+                
+                # Basic email validation
+                if not recipient:
+                    return "I couldn't determine who to send the email to. Can you try again with a clear recipient?"
+                
+                # Prepare the email payload
+                email_payload = {
+                    "type": "email",
+                    "recipient": recipient,
+                    "subject": subject or "No subject",
+                    "content": content or "",
+                    "timestamp": time.time()
+                }
+                
+                # Send to API endpoint
+                api_url = "http://localhost:8000/api/email"  # Updated endpoint
+                print(f"[DEBUG] Sending email request to: {api_url}")
+                print(f"[DEBUG] Email payload: {email_payload}")
+                
+                # Make the request in a non-blocking way
+                def send_email_request():
+                    try:
+                        print(f"Sending email request: {email_payload}")
+                        print(f"[DEBUG] Email API URL: {api_url}")
+                        response = requests.post(
+                            api_url,
+                            json=email_payload,
+                            headers={"Content-Type": "application/json"},
+                            timeout=5
+                        )
+                        
+                        print(f"[DEBUG] Email API response status: {response.status_code}")
+                        print(f"[DEBUG] Email API response headers: {response.headers}")
+                        
+                        try:
+                            print(f"[DEBUG] Email API response body: {response.text[:200]}")
+                        except Exception as text_err:
+                            print(f"[DEBUG] Could not get response text: {text_err}")
+                        
+                        if response.status_code == 200:
+                            print(f"Email sent successfully: {response.json()}")
+                        else:
+                            print(f"Email API request failed: {response.status_code}")
+                    except Exception as e:
+                        print(f"Error sending email request: {e}")
+                        print(f"[DEBUG] Exception type: {type(e).__name__}")
+                
+                # Start the request in a separate thread
+                threading.Thread(target=send_email_request, daemon=True).start()
+                
+                return f"I'm sending your email to {recipient} now."
+            
+            # For other types of commands (flight booking, weather, etc.)
+            else:
+                # Prepare the JSON payload in the format expected by the backend
+                api_url = "http://localhost:8000/command"  # Updated to use /command directly
+                print(f"[DEBUG] Command API URL: {api_url}")
+                
+                # Format the payload as expected by the backend
+                payload = {
+                    "interaction": {
+                        "command": {
+                            "text": command
+                        }
+                    },
+                    "timestamp": time.time(),
+                    "confirmed": True
+                }
+                
+                print(f"[DEBUG] Command payload: {payload}")
+                print(f"[DEBUG] Formatted JSON payload: {json.dumps(payload, indent=2)}")
+                print(f"[DEBUG] Request will be sent to {api_url} with content-type: application/json")
+                
+                # Make the request in a non-blocking way
+                def make_api_request():
+                    try:
+                        print(f"[DEBUG] Sending command request to {api_url}")
+                        print(f"[DEBUG] Payload: {json.dumps(payload, indent=2)}")
+                        print(f"[DEBUG] *** STARTING POST REQUEST to {api_url} at {time.strftime('%H:%M:%S')} ***")
+                        response = requests.post(
+                            api_url,
+                            json=payload,
+                            headers={"Content-Type": "application/json"},
+                            timeout=5
+                        )
+                        print(f"[DEBUG] *** POST REQUEST COMPLETED at {time.strftime('%H:%M:%S')} ***")
+                        
+                        print(f"[DEBUG] Command API response status: {response.status_code}")
+                        print(f"[DEBUG] Command API response headers: {response.headers}")
+                        
+                        try:
+                            print(f"[DEBUG] Command API response body: {response.text[:200]}")
+                        except Exception as text_err:
+                            print(f"[DEBUG] Could not get response text: {text_err}")
+                        
+                        if response.status_code == 200:
+                            print(f"Command processed successfully: {response.json()}")
+                            # Here you could update the UI with the response
+                        else:
+                            print(f"API request failed with status code {response.status_code}, trying fallback endpoint")
+                            # Try the fallback endpoint
+                            fallback_url = "http://localhost:8000/voice/command"  # Try the /voice/command as fallback
+                            print(f"[DEBUG] Trying fallback URL: {fallback_url}")
+                            try:
+                                print(f"[DEBUG] Sending to fallback with payload: {json.dumps(payload, indent=2)}")
+                                print(f"[DEBUG] *** STARTING FALLBACK POST REQUEST to {fallback_url} at {time.strftime('%H:%M:%S')} ***")
+                                fallback_response = requests.post(
+                                    fallback_url,
+                                    json=payload,
+                                    headers={"Content-Type": "application/json"},
+                                    timeout=5
+                                )
+                                print(f"[DEBUG] *** FALLBACK POST REQUEST COMPLETED at {time.strftime('%H:%M:%S')} ***")
+                                
+                                print(f"[DEBUG] Fallback response status: {fallback_response.status_code}")
+                                print(f"[DEBUG] Fallback response headers: {fallback_response.headers}")
+                                
+                                try:
+                                    print(f"[DEBUG] Fallback response body: {fallback_response.text[:200]}")
+                                except Exception as text_err:
+                                    print(f"[DEBUG] Could not get fallback response text: {text_err}")
+                                
+                                if fallback_response.status_code == 200:
+                                    print(f"Command processed successfully with fallback: {fallback_response.json()}")
+                                else:
+                                    print(f"Fallback API request also failed: {fallback_response.status_code}")
+                            except Exception as e:
+                                print(f"Error making fallback API request: {e}")
+                                print(f"[DEBUG] Fallback exception type: {type(e).__name__}")
+                    except Exception as e:
+                        print(f"Error making primary API request: {e}")
+                        print(f"[DEBUG] Exception type: {type(e).__name__}")
+                        # Try the fallback endpoint
+                        fallback_url = "http://localhost:8000/voice/command"
+                        print(f"[DEBUG] Trying fallback URL after exception: {fallback_url}")
+                        try:
+                            print(f"[DEBUG] Sending to fallback with payload: {json.dumps(payload, indent=2)}")
+                            print(f"[DEBUG] *** STARTING FALLBACK POST REQUEST to {fallback_url} at {time.strftime('%H:%M:%S')} ***")
+                            fallback_response = requests.post(
+                                fallback_url,
+                                json=payload,
+                                headers={"Content-Type": "application/json"},
+                                timeout=5
+                            )
+                            print(f"[DEBUG] *** FALLBACK POST REQUEST COMPLETED at {time.strftime('%H:%M:%S')} ***")
+                            
+                            print(f"[DEBUG] Fallback response status: {fallback_response.status_code}")
+                            print(f"[DEBUG] Fallback response headers: {fallback_response.headers}")
+                            
+                            try:
+                                print(f"[DEBUG] Fallback response body: {fallback_response.text[:200]}")
+                            except Exception as text_err:
+                                print(f"[DEBUG] Could not get fallback response text: {text_err}")
+                            
+                            if fallback_response.status_code == 200:
+                                print(f"Command processed successfully with fallback: {fallback_response.json()}")
+                            else:
+                                print(f"Fallback API request also failed: {fallback_response.status_code}")
+                        except Exception as e:
+                            print(f"Error making fallback API request: {e}")
+                            print(f"[DEBUG] Fallback exception type: {type(e).__name__}")
+                
+                # Start the request in a separate thread
+                print("[DEBUG] Starting API request thread...")
+                thread = threading.Thread(target=make_api_request, daemon=True)
+                thread.start()
+                print(f"[DEBUG] API request thread started: {thread.name}")
+                
+                return f"I'm processing your request now."
+        except Exception as e:
+            print(f"Error processing command: {e}")
+            return "I'm sorry, I encountered an error processing your request."
+    else:
+        print("Command cancelled by user")
+        return "Command cancelled. What else can I help you with?"
+
 # Main rendering loop
 def main():
     try:
         # Initialize TTS
         tts_client = initialize_tts()
         
-        # Initialize voice recognition if available
+        # Create a voice recognizer if the required libraries are available
         voice_recognizer = None
         if VOICE_RECOGNITION_AVAILABLE:
             try:
-                # Create temp directory if it doesn't exist
-                os.makedirs("temp", exist_ok=True)
+                # Initialize with wake words ("hey ava" or "hi ava")
+                voice_recognizer = VoiceRecognizer(wake_words=["hi.", "hi, hey, hey."])
                 
-                # Initialize with simpler wake word for easier activation
-                wake_words = ["hey", "hi"]
-                voice_recognizer = VoiceRecognizer(wake_words=wake_words, temp_dir="temp")
+                # Initialize confirmation state 
+                voice_recognizer.awaiting_confirmation = False
+                voice_recognizer.pending_command = None
+                
+                # Start listening for wake words (but don't immediately activate)
                 voice_recognizer.start_listening()
-                print("Voice recognition initialized successfully.")
-                if hasattr(voice_recognizer, 'use_groq') and voice_recognizer.use_groq:
-                    print("Using Groq Whisper for enhanced wake word detection.")
-                else:
-                    print("Using Google Speech Recognition for wake word detection.")
-                print("Say 'Hey' to activate!")
+                print("Voice recognition started successfully.")
             except Exception as e:
-                print(f"ERROR initializing voice recognition: {e}")
-                print("The application will run without voice activation features.")
+                print(f"Error initializing voice recognition: {e}")
                 voice_recognizer = None
+        else:
+            print("Voice recognition is disabled.")
+        
+        # One-time initialization dialog - only when explicitly requested by user pressing 'g'
+        initial_greeting = "Hello, I'm Ava. Say 'Hey Ava' or 'Hi Ava' to activate me."
+        show_greeting = False  # Don't show initial greeting by default
         
         # Load fonts for text rendering
         try:
@@ -343,31 +785,88 @@ def main():
         def on_voice_activation(activated, command=None):
             nonlocal is_activated, activation_timer, current_message, message_timer, show_message, last_command
             
+            # Check if we're awaiting confirmation and this is a confirmation response
+            if activated and command and voice_recognizer and voice_recognizer.awaiting_confirmation:
+                # Check if the command is a confirmation (yes/no)
+                command_lower = command.lower()
+                is_confirmed = any(word in command_lower for word in ["yes", "yeah", "yep", "correct", "sure", "ok", "okay"])
+                is_denied = any(word in command_lower for word in ["no", "nope", "don't", "not", "cancel", "incorrect"])
+                
+                if is_confirmed or is_denied:
+                    # Process the confirmation response
+                    response = process_confirmation(voice_recognizer, voice_recognizer.pending_command, is_confirmed)
+                    current_message = response
+                    message_timer = 0
+                    show_message = True
+                    
+                    # Speak the response
+                    if tts_client:
+                        speak_text(tts_client, response)
+                    
+                    # Reset confirmation state
+                    voice_recognizer.awaiting_confirmation = False
+                    voice_recognizer.pending_command = None
+                    return
+            
             # If we receive a command but we're already activated, just store the command without reactivating
             if activated and command and is_activated:
                 # Just store the command without repeating the activation sequence
                 last_command = command
                 print(f"Command detected: {command}")
+                
+                # Process the command and generate a confirmation response
+                confirmation_response = generate_response(command)
+                if confirmation_response:
+                    # Update the display message with the confirmation
+                    current_message = confirmation_response
+                    message_timer = 0
+                    show_message = True
+                    
+                    # Speak the confirmation response
+                    if tts_client:
+                        speak_text(tts_client, confirmation_response)
                 return
             
-            if activated:
+            # This is a new activation (wake word detected) with no command yet
+            if activated and not command:
                 is_activated = True
                 activation_timer = 0  # Reset timer on activation
                 
-                # Set response message - Change this text to whatever you want
-                current_message = "I'm listening. How can I help?"  # Modified activation message
+                # Set response message for initial activation only
+                current_message = "I'm listening. How can I help?"
                 message_timer = 0
                 show_message = True
                 print("Voice activated! Listening for command...")
                 
-                # Speak the response using TTS
+                # Speak the response using TTS only for initial activation
                 if tts_client:
                     speak_text(tts_client, current_message)
+            
+            # This is a new activation with a command already detected
+            elif activated and command:
+                is_activated = True
+                activation_timer = 0  # Reset timer on activation
                 
-                # If a command was captured, store it
-                if command:
-                    last_command = command
-                    print(f"Command detected: {command}")
+                # Directly process the command without saying "I'm listening"
+                last_command = command
+                print(f"Command detected: {command}")
+                
+                # Process the command and generate a confirmation response
+                confirmation_response = generate_response(command)
+                if confirmation_response:
+                    # Update the display message with the confirmation
+                    current_message = confirmation_response
+                    message_timer = 0
+                    show_message = True
+                    
+                    # Speak the confirmation response
+                    if tts_client:
+                        speak_text(tts_client, confirmation_response)
+                    
+                    # Set state to awaiting confirmation
+                    if voice_recognizer:
+                        voice_recognizer.awaiting_confirmation = True
+                        voice_recognizer.pending_command = command
             else:
                 # Don't immediately deactivate, let the animation timer handle it
                 pass
@@ -442,6 +941,7 @@ def main():
             index_buffer=halo_ibo
         )
         
+        # Modify the command handling in the main loop
         while running:            
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -454,16 +954,90 @@ def main():
                         is_activated = True
                         activation_timer = 0
                         # Simulate a test command for manual activation - updated message
-                        current_message = "Okay, I am now recording"
+                        test_command = "book me a flight to Cabo for March 10"
+                        current_message = generate_response(test_command)
                         message_timer = 0
                         show_message = True
-                        # For testing - simulate a command after 2 seconds
-                        last_command = "open browser and search for cats"
-                        print("Manual activation! Listening for command.")
+                        # For testing - store the command
+                        last_command = test_command
+                        print(f"Manual activation with test command: {test_command}")
+                        
+                        # Set awaiting confirmation state
+                        if voice_recognizer:
+                            voice_recognizer.awaiting_confirmation = True
+                            voice_recognizer.pending_command = test_command
                         
                         # Speak the response using TTS
                         if tts_client:
                             speak_text(tts_client, current_message)
+                    # Test email command with E key
+                    elif event.key == pygame.K_e:
+                        is_activated = True
+                        activation_timer = 0
+                        # Simulate an email command
+                        test_command = "send an email to john@example.com about Meeting Tomorrow saying Can we meet at 2pm in the conference room?"
+                        current_message = generate_response(test_command)
+                        message_timer = 0
+                        show_message = True
+                        # For testing - store the command
+                        last_command = test_command
+                        print(f"Testing email command: {test_command}")
+                        
+                        # Set awaiting confirmation state
+                        if voice_recognizer:
+                            voice_recognizer.awaiting_confirmation = True
+                            voice_recognizer.pending_command = test_command
+                        
+                        # Speak the response using TTS
+                        if tts_client:
+                            speak_text(tts_client, current_message)
+                    # Test weather command with W key
+                    elif event.key == pygame.K_w:
+                        is_activated = True
+                        activation_timer = 0
+                        # Simulate a weather command
+                        test_command = "what's the weather in New York"
+                        current_message = generate_response(test_command)
+                        message_timer = 0
+                        show_message = True
+                        # For testing - store the command
+                        last_command = test_command
+                        print(f"Testing weather command: {test_command}")
+                        
+                        # Set awaiting confirmation state
+                        if voice_recognizer:
+                            voice_recognizer.awaiting_confirmation = True
+                            voice_recognizer.pending_command = test_command
+                        
+                        # Speak the response using TTS
+                        if tts_client:
+                            speak_text(tts_client, current_message)
+                    # Add a key for confirming commands (for testing)
+                    elif event.key == pygame.K_y and voice_recognizer and voice_recognizer.awaiting_confirmation:
+                        # Process "yes" confirmation
+                        response = process_confirmation(voice_recognizer, voice_recognizer.pending_command, True)
+                        current_message = response
+                        message_timer = 0
+                        show_message = True
+                        # Reset confirmation state
+                        voice_recognizer.awaiting_confirmation = False
+                        voice_recognizer.pending_command = None
+                        # Speak the response
+                        if tts_client:
+                            speak_text(tts_client, response)
+                    # Add a key for cancelling commands (for testing)
+                    elif event.key == pygame.K_n and voice_recognizer and voice_recognizer.awaiting_confirmation:
+                        # Process "no" confirmation
+                        response = process_confirmation(voice_recognizer, voice_recognizer.pending_command, False)
+                        current_message = response
+                        message_timer = 0
+                        show_message = True
+                        # Reset confirmation state
+                        voice_recognizer.awaiting_confirmation = False
+                        voice_recognizer.pending_command = None
+                        # Speak the response
+                        if tts_client:
+                            speak_text(tts_client, response)
                     # Add a key to recalibrate microphone
                     elif event.key == pygame.K_r and voice_recognizer:
                         print("Manually requesting microphone recalibration...")
@@ -528,17 +1102,9 @@ def main():
                     is_activated = False
                     print("Voice activation ended.")
                     
-                    # If we have a command, show it
+                    # Reset last_command without repeating it back
                     if last_command:
-                        current_message = f"I heard: {last_command}"
-                        message_timer = 0
-                        show_message = True
-                        
-                        # Speak the response using TTS
-                        if tts_client:
-                            speak_text(tts_client, current_message)
-                            
-                        # Reset last_command after displaying
+                        # Just reset the command without repeating it
                         last_command = ""
             else:
                 # Return to normal scale when not activated

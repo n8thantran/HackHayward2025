@@ -32,9 +32,10 @@ def prompt_perplexity(task: str) -> Tuple[str, Any]:
     STRICT OUTPUT FORMAT:
     You must respond with a valid JSON object containing exactly these fields:
     {
-        "request_type": "email" OR "flight",
+        "request_type": "email" OR "flight"
         "data": {
             // For email requests only:
+            // if nathan, use nathan.tran04@sjsu.edu
             "recipient": "email address",
             "subject": "email subject line",
             "body": "email body content",
@@ -181,12 +182,7 @@ def handle_request(task: str):
             "data": data
         }
 
-# Run the FastAPI app if this file is executed directly
-if __name__ == "__main__":
-    import uvicorn
-    print("Starting voice command API server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
+# Define all API routes
 @app.post("/voice/command", response_model=CommandResponse)
 async def process_voice_command(request: Request):
     """
@@ -219,6 +215,58 @@ async def process_voice_command(request: Request):
         processed_data=result["data"]
     )
 
+@app.post("/command", response_model=CommandResponse)
+async def process_command(request: Request):
+    """
+    Process a command from any source (alias for /voice/command)
+    
+    This endpoint provides backward compatibility with frontend code
+    that uses the /command endpoint.
+    """
+    # Simply call the voice command processing function
+    return await process_voice_command(request)
+
+@app.post("/api/email", response_model=CommandResponse)
+async def process_email(request: Request):
+    """
+    Process an email request specifically
+    
+    Takes an email request with recipient, subject, and content,
+    and processes it as a command.
+    if nathan, use nathan.tran04@sjsu.edu
+    """
+    # Get the raw JSON data
+    data = await request.json()
+    
+    try:
+        # Extract the email details
+        recipient = data.get("recipient", "")
+        subject = data.get("subject", "No subject")
+        content = data.get("content", "")
+        
+        if not recipient:
+            raise ValueError("Email recipient is required")
+        
+        # Construct a command text from the email details
+        command_text = f"send an email to {recipient} about {subject} saying {content}"
+        print(f"Constructed email command: {command_text}")
+        
+        # Process using the existing handle_request function
+        result = handle_request(command_text)
+        
+        # Return a response
+        return CommandResponse(
+            status=result["status"],
+            message=result["message"],
+            command_text=command_text,
+            processed_data=result["data"]
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid email request format: {str(e)}"
+        )
+
 @app.get("/health")
 async def health_check():
     """
@@ -229,3 +277,8 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "Voice Command API"
     }
+
+# Run the FastAPI app if this file is executed directly
+if __name__ == "__main__":
+    print("Starting voice command API server...")
+    uvicorn.run(app, host="localhost", port=8000)
