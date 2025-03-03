@@ -1,50 +1,108 @@
 # Ava Voice Assistant
 
-A voice-activated assistant that listens for the wake phrase "Hi, Ava" and displays a circular window on top of all other windows.
+A voice-activated assistant that listens for the wake phrase "Hey, Ava" and displays AVA, on the top right of your screen.
 
 ## Features
 
-- Always listens for the wake phrase "Hi, Ava"
+- Always listens for the wake phrase "Hey, Ava"
 - Circular UI with a black border and white background
 - Stays on top of all other windows
-- Slides up from the bottom of the screen when activated
-- Slides down and hides when closed
-- Draggable interface
+
+## Prerequisites
+
+- Python 3.8 or higher
+- Node.js (if using web components)
+- Git
 
 ## Installation
 
-1. Make sure you have Node.js installed on your system.
-2. Clone this repository.
-3. Navigate to the frontend directory:
+1. Clone the repository.
+
+2. Set up environment variables:
+
+```bash
+# Copy the example environment file
+cp .env.example .env
 ```
-cd frontend
+
+3. Edit the `.env` file and add your API keys:
+
 ```
-4. Install the dependencies:
+GROQ_API_KEY=your_api_key_here
+perplexity_Key=your_perplexity_key_here
 ```
-npm install
+
+4. Set up the backend:
+
+```bash
+# Navigate to the backend directory
+cd backend
+
+# Create a virtual environment (recommended)
+python -m venv venv
+
+# Activate the virtual environment
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+5. Set up the frontend:
+
+```bash
+# Navigate to the frontend directory from the project root
+cd ../frontend
+
+# Create a virtual environment (recommended)
+python -m venv venv
+
+# Activate the virtual environment
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 ## Usage
 
-1. Start the application:
+1. Start the backend server:
+
+```bash
+# Make sure you're in the backend directory with the virtual environment activated
+cd backend
+python main.py
 ```
-npm start
+
+2. In a new terminal, start the frontend application:
+
+```bash
+# Make sure you're in the frontend directory with the virtual environment activated
+cd frontend
+python main.py
 ```
-2. The application will run in the background, listening for the wake phrase.
-3. Say "Hi, Ava" to activate the assistant.
-4. Click the X button or click outside the window to close it.
+
+3. The application will run in the background, listening for the wake phrase.
+4. Say "Hi, Ava" to activate the assistant.
 
 ## Technologies Used
 
-- Electron - For creating the desktop application
-- @electron/remote - For window control functionality
-- Web Speech API - For voice recognition
-- HTML/CSS/JavaScript - For the UI
+- PyGame
+- Groq API
+- Perplexity Sonar Reasoning
+- FastAPI
+- SpeechRecognition library
+- ModernGL
+- ElevenLabs
 
 ## Future Enhancements
 
 - Add more voice commands
 - Integrate with AI services for intelligent responses
 - Add settings to customize appearance and behavior
-- Improve voice recognition accuracy
-- Add text-to-speech for responses
